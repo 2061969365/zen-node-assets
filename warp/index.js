@@ -475,9 +475,14 @@ function startGateway(useProxy) {
     NO_PROXY: '127.0.0.1,localhost',
     no_proxy: '127.0.0.1,localhost',
   };
+  for (const k of ['HTTPS_PROXY', 'HTTP_PROXY', 'ALL_PROXY', 'https_proxy', 'http_proxy', 'all_proxy']) {
+    delete gatewayEnv[k];
+  }
   if (useProxy) {
     gatewayEnv.HTTPS_PROXY = `http://127.0.0.1:${EGRESS_PORT}`;
     gatewayEnv.HTTP_PROXY = `http://127.0.0.1:${EGRESS_PORT}`;
+    gatewayEnv.https_proxy = gatewayEnv.HTTPS_PROXY;
+    gatewayEnv.http_proxy = gatewayEnv.HTTP_PROXY;
   }
   state.gateway = new Child('gateway', ZEN_DIRECT_PATH, [], {
     logFile: path.join(LOG_DIR, 'gateway.stdio.log'),

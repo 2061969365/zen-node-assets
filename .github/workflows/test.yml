@@ -116,8 +116,13 @@ jobs:
 
           echo "stop/start"
           curl -fsS -X POST -H "Authorization: Bearer test" "http://127.0.0.1:$PORT/_zen/node/v1/stop" >/dev/null
-          sleep 2
-          stop_code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/health" || true)
+          stop_code=""
+          for i in $(seq 1 30); do
+            stop_code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/health" || true)
+            [ "$stop_code" = "503" ] && break
+            [ "$stop_code" = "000" ] && break
+            sleep 1
+          done
           echo "after stop health=$stop_code"
           [ "$stop_code" = "503" ] || [ "$stop_code" = "000" ]
           curl -fsS -X POST -H "Authorization: Bearer test" "http://127.0.0.1:$PORT/_zen/node/v1/start" >/dev/null
