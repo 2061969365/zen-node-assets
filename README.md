@@ -24,7 +24,7 @@ No root, no `package.json`, no `npm install`, no Dockerfile.
 
 | Name | Required | Default | Meaning |
 |---|---|---|---|
-| `PORT` | yes | — | platform-provided public port |
+| `PORT` | yes | — | platform port; also reads `SERVER_PORT` / `P_SERVER_PORT` (Pterodactyl/KataBump) |
 | `NODE_TOKEN` | no | generated | management bearer; written to `./.zen/node-token` |
 | `NODE_ID` | no | `vpngate-1` / `warp-1` / `warp-wireproxy-1` | node identity |
 | `PUBLIC_URL` | no | auto-detect | public URL used in the manifest |

@@ -40,15 +40,16 @@ const { Readable, Transform } = require('stream');
 const { pipeline } = require('stream/promises');
 
 const TEMPLATE = 'vpngate';
-const VERSION = '2026.11.27.1';
+const VERSION = '2026.11.27.2';
 const DEFAULT_NODE_ID = 'vpngate-1';
 const DEFAULT_ALLOW_FALLBACK = true;
 const DEFAULT_ASSETS_BASE = 'https://github.com/2061969365/zen-node-assets/releases/download/v2026.11.27';
 
 const env = process.env;
-const PORT = Number(env.PORT || 0);
+// PORT 是通用约定；Pterodactyl/KataBump 一类面板用 SERVER_PORT。
+const PORT = Number(env.PORT || env.SERVER_PORT || env.P_SERVER_PORT || env.KATABUMP_PORT || 0);
 if (!Number.isInteger(PORT) || PORT <= 0 || PORT > 65535) {
-  console.error('PORT is required (platform-provided random port)');
+  console.error('PORT is required: set PORT or SERVER_PORT to the platform-provided port');
   process.exit(1);
 }
 
