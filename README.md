@@ -38,6 +38,13 @@ No root, no `package.json`, no `npm install`, no Dockerfile.
 | `ROTATE_429_THRESHOLD` | no | `1` | rotate after N new upstream 429s; `0` disables |
 | `ROTATE_EGRESS_FAILS` | no | `3` | rotate after N consecutive egress failures |
 | `ROTATE_INTERVAL_SEC` | no | `0` | periodic rotate interval; 0 disables |
+| `ROTATE_429_GRACE_SEC` | no | `90` | ignore upstream 429s during the first N seconds after gateway start |
+| `BOOT_PROBE_TRIES` | no | `4` | `/v1/chat/completions` probes before reporting running; `0` disables |
+| `BOOT_PROBE_TIMEOUT_SEC` | no | `90` | per boot-probe timeout |
+| `PROBE_MODEL` | no | `deepseek-v4.1-flash-free` | model used for the boot probe |
+| `WARP_ENDPOINT` | no | `162.159.192.1:2408` | outer WireGuard endpoint, kept IPv4 so hosts without IPv6 can connect |
+| `WARP_DNS` | no | `1.1.1.1` | DNS pushed into the tunnel; DoH for `warp`, UDP resolver for `warp-wireproxy` |
+| `VPNGATE_DNS` | no | `1.1.1.1` | DoH server for the vpngate tunnel |
 | `LOG_DIR` | no | `./.zen` | logs and assets |
 | `LOG_MAX_MB` | no | `10` | rotate `node.log` above this size |
 | `LOG_KEEP` | no | `3` | rotated `node.log` files to keep |
@@ -52,6 +59,8 @@ No root, no `package.json`, no `npm install`, no Dockerfile.
 vpngate additionally needs `python3` and `curl` on the host. warp and warp-wireproxy need no Python.
 
 `NODE_TOKEN` no longer regenerates on restart: it uses `NODE_TOKEN` if set, otherwise the fixed default baked into `index.js`. The effective token is always written to `LOG_DIR/node-token`. Because the default is public in this repo, set `NODE_TOKEN` per node if the management API is reachable from untrusted networks.
+
+`warp` and `warp-wireproxy` keep both IPv4 and IPv6 tunnel addresses plus `::/0`; the outer endpoint stays IPv4 (`WARP_ENDPOINT`) so hosts without IPv6 can still bring the tunnel up, while IPv6-only destinations work inside it. `warp` sends DNS through the tunnel as DoH (`WARP_DNS`); `warp-wireproxy` resolves through the tunnel with `WARP_DNS`. On startup the node probes `/v1/chat/completions` and only reports `running` after a 200; 429s during boot trigger an egress rotate.
 
 ## Memory
 

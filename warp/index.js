@@ -42,7 +42,7 @@ const { Readable, Transform } = require('stream');
 const { pipeline } = require('stream/promises');
 
 const TEMPLATE = 'warp';
-const VERSION = '2026.11.27.7';
+const VERSION = '2026.11.27.8';
 const DEFAULT_NODE_ID = 'warp-1';
 const DEFAULT_ALLOW_FALLBACK = false;
 const DEFAULT_ASSETS_BASE = 'https://github.com/2061969365/zen-node-assets/releases/download/v2026.11.27';
@@ -70,6 +70,10 @@ const EGRESS_MODE = String(env.EGRESS_MODE || 'auto').toLowerCase() === 'direct'
 let ALLOW_DIRECT_FALLBACK = env.ALLOW_DIRECT_FALLBACK == null ? DEFAULT_ALLOW_FALLBACK : env.ALLOW_DIRECT_FALLBACK !== '0';
 let MAX_RUN_SEC = Number(env.MAX_RUN_SEC || 0);
 let PROBE_INTERVAL_SEC = Math.max(30, Number(env.PROBE_INTERVAL_SEC || 300));
+const ROTATE_429_GRACE_SEC = Math.max(0, Number(env.ROTATE_429_GRACE_SEC == null ? 90 : env.ROTATE_429_GRACE_SEC));
+const BOOT_PROBE_TRIES = Math.max(0, Number(env.BOOT_PROBE_TRIES == null ? 4 : env.BOOT_PROBE_TRIES));
+const BOOT_PROBE_TIMEOUT_SEC = Math.max(10, Number(env.BOOT_PROBE_TIMEOUT_SEC || 90));
+const PROBE_MODEL = String(env.PROBE_MODEL || 'deepseek-v4.1-flash-free');
 // Automatic rotate policy. ROTATE_429_THRESHOLD=0 disables 429 rotation.
 let ROTATE_429_THRESHOLD = Math.max(0, Number(env.ROTATE_429_THRESHOLD == null ? 1 : env.ROTATE_429_THRESHOLD));
 let ROTATE_EGRESS_FAILS = Math.max(1, Number(env.ROTATE_EGRESS_FAILS || 3));
@@ -453,6 +457,43 @@ function httpGetJson(port, pathname, timeoutMs = 5000) {
   });
 }
 
+function httpPostJson(port, pathname, body, timeoutMs = 60000) {
+  return new Promise((resolve, reject) => {
+    const data = Buffer.from(body);
+    const req = http.request({
+      host: '127.0.0.1',
+      port,
+      path: pathname,
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'content-length': data.length,
+        authorization: 'Bearer public',
+        'user-agent': `zen-node/${VERSION}`,
+      },
+      timeout: timeoutMs,
+    }, (res) => {
+      let text = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => { text += c; });
+      res.on('end', () => resolve({ status: res.statusCode, body: text }));
+    });
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    req.on('error', reject);
+    req.end(data);
+  });
+}
+
+async function probeChat() {
+  const body = JSON.stringify({
+    model: PROBE_MODEL,
+    messages: [{ role: 'user', content: '只回复 ok' }],
+    max_tokens: 8,
+    stream: true,
+  });
+  return httpPostJson(ZEN_PORT, '/v1/chat/completions', body, BOOT_PROBE_TIMEOUT_SEC * 1000);
+}
+
 function proxyHttpGet(proxyPort, targetUrl, timeoutMs = 10000) {
   return new Promise((resolve, reject) => {
     const u = new URL(targetUrl);
@@ -674,6 +715,42 @@ async function startAll() {
     state.up429 = Number((health.stats && health.stats.up429) || 0);
     state.up429Base = state.up429;
     state.lastRotateAt = Date.now();
+    if (useProxy && BOOT_PROBE_TRIES > 0) {
+      let bootOk = false;
+      for (let attempt = 1; attempt <= BOOT_PROBE_TRIES; attempt++) {
+        let r = null;
+        try {
+          r = await probeChat();
+        } catch (e) {
+          log(`boot probe #${attempt}/${BOOT_PROBE_TRIES} error: ${e.message}`);
+        }
+        const code = r ? r.status : 0;
+        if (code === 200) {
+          bootOk = true;
+          log(`boot probe #${attempt}/${BOOT_PROBE_TRIES} -> 200`);
+          break;
+        }
+        log(`boot probe #${attempt}/${BOOT_PROBE_TRIES} -> ${code} ${r ? r.body.slice(0, 160) : ''}`);
+        if (attempt >= BOOT_PROBE_TRIES) break;
+        try {
+          await rotateEgress('429');
+        } catch (e) {
+          log('boot rotate failed:', e.message);
+          await sleep(2000);
+          continue;
+        }
+        if (state.gateway) await state.gateway.stop();
+        startGateway(true);
+        const h2 = await waitGatewayHealth(120000);
+        if (!h2) throw new Error('gateway health timeout after boot rotate');
+        state.gatewayHealth = h2;
+        state.up429 = Number((h2.stats && h2.stats.up429) || 0);
+        state.up429Base = state.up429;
+        state.egressIp = h2.egress_ip || state.egress.ip || '';
+        state.lastRotateAt = Date.now();
+      }
+      if (!bootOk) throw new Error(`boot chat probe failed after ${BOOT_PROBE_TRIES} tries`);
+    }
     state.phase = 'running';
     log(`running template=${TEMPLATE} node=${NODE_ID} egress=${useProxy ? state.egress.ip : 'direct'} run=${state.runId}`);
   } catch (e) {
@@ -773,8 +850,14 @@ function startWatchdog() {
       const up429 = Number((h.json.stats && h.json.stats.up429) || 0);
       state.up429 = up429;
       if (ROTATE_429_THRESHOLD > 0 && up429 - state.up429Base >= ROTATE_429_THRESHOLD) {
-        log(`watchdog: up429 ${state.up429Base} -> ${up429} (threshold ${ROTATE_429_THRESHOLD}), rotating`);
-        await rotate('429');
+        const age = Date.now() - (state.startedAtGateway || 0);
+        if (ROTATE_429_GRACE_SEC > 0 && age < ROTATE_429_GRACE_SEC * 1000) {
+          state.up429Base = up429;
+          log(`watchdog: ignoring 429 during ${ROTATE_429_GRACE_SEC}s startup grace (${up429})`);
+        } else {
+          log(`watchdog: up429 ${state.up429Base} -> ${up429} (threshold ${ROTATE_429_THRESHOLD}), rotating`);
+          await rotate('429');
+        }
       }
     }
 
@@ -1338,7 +1421,9 @@ function parseIni(text) {
     }
     const idx = line.indexOf('=');
     if (idx < 0 || !cur) continue;
-    out[cur][line.slice(0, idx).trim().toLowerCase()] = line.slice(idx + 1).trim();
+    const key = line.slice(0, idx).trim().toLowerCase();
+    const value = line.slice(idx + 1).trim();
+    out[cur][key] = out[cur][key] ? `${out[cur][key]}, ${value}` : value;
   }
   return out;
 }
@@ -1358,7 +1443,8 @@ function wgcfToSingbox(text) {
   if (addresses.length === 0) throw new Error('wgcf profile missing Address');
 
   const mtu = Number(iface.mtu || 1280) || 1280;
-  const endpoint = String(peer.endpoint || 'engage.cloudflareclient.com:2408');
+  // 外层固定走 IPv4 anycast，避免 1.14 对 endpoint 域名的解析依赖；隧道内仍保留 v4+v6。
+  const endpoint = String(env.WARP_ENDPOINT || '162.159.192.1:2408');
   const m = endpoint.match(/^\[?([^\]]+?)\]?:(\d+)$/);
   const host = m ? m[1] : endpoint;
   const port = m ? Number(m[2]) : 2408;
@@ -1391,6 +1477,11 @@ function wgcfToSingbox(text) {
 
   return {
     log: { level: 'info' },
+    dns: {
+      servers: [{ type: 'https', tag: 'dns-remote', server: String(env.WARP_DNS || '1.1.1.1'), detour: 'warp' }],
+      final: 'dns-remote',
+      strategy: 'prefer_ipv4',
+    },
     endpoints: [wireguard],
     inbounds: [{ type: 'mixed', tag: 'in', listen: '127.0.0.1', listen_port: EGRESS_PORT }],
     outbounds: [{ type: 'direct', tag: 'direct' }],

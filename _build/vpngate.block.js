@@ -52,6 +52,21 @@ async function ensureTemplateAssets() {
   await ensureAsset('probe_and_select_vpngate.py', `${ASSETS_BASE_URL}/probe_and_select_vpngate.py`, false, SCRIPT_DIR);
 }
 
+async function applyVpngateDns(outPath) {
+  try {
+    const cfg = JSON.parse(await fsp.readFile(outPath, 'utf8'));
+    const detour = (cfg.endpoints && cfg.endpoints[0] && cfg.endpoints[0].tag) || (cfg.route && cfg.route.final) || 'vpngate-active';
+    cfg.dns = {
+      servers: [{ type: 'https', tag: 'dns-remote', server: String(env.VPNGATE_DNS || '1.1.1.1'), detour }],
+      final: 'dns-remote',
+      strategy: 'prefer_ipv4',
+    };
+    await fsp.writeFile(outPath, JSON.stringify(cfg, null, 2));
+  } catch (e) {
+    log('vpngate dns inject failed:', e.message);
+  }
+}
+
 async function runVpngateSelect() {
   await preflightVpngate();
   const csvPath = path.join(LOG_DIR, 'vpngate.csv');
@@ -82,6 +97,7 @@ async function runVpngateSelect() {
   });
   if (code !== 0) throw new Error(`vpngate select exited ${code}`);
   if (!fs.existsSync(outPath)) throw new Error('vpngate select produced no sb.json');
+  await applyVpngateDns(outPath);
   vpngateBurned.clear();
   vpngateIdx = 0;
   saveVpngateIdx();
@@ -132,6 +148,11 @@ async function rotateVpngate(reason) {
   const endpoint = { ...node.endpoint, tag: 'vpngate-active' };
   const cfg = {
     log: { level: 'info' },
+    dns: {
+      servers: [{ type: 'https', tag: 'dns-remote', server: String(env.VPNGATE_DNS || '1.1.1.1'), detour: 'vpngate-active' }],
+      final: 'dns-remote',
+      strategy: 'prefer_ipv4',
+    },
     endpoints: [endpoint],
     outbounds: [{ type: 'direct', tag: 'direct' }],
     inbounds: [{ type: 'mixed', tag: 'mixed-in', listen: '127.0.0.1', listen_port: EGRESS_PORT }],

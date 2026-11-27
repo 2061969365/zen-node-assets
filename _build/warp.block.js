@@ -20,7 +20,9 @@ function parseIni(text) {
     }
     const idx = line.indexOf('=');
     if (idx < 0 || !cur) continue;
-    out[cur][line.slice(0, idx).trim().toLowerCase()] = line.slice(idx + 1).trim();
+    const key = line.slice(0, idx).trim().toLowerCase();
+    const value = line.slice(idx + 1).trim();
+    out[cur][key] = out[cur][key] ? `${out[cur][key]}, ${value}` : value;
   }
   return out;
 }
@@ -40,7 +42,8 @@ function wgcfToSingbox(text) {
   if (addresses.length === 0) throw new Error('wgcf profile missing Address');
 
   const mtu = Number(iface.mtu || 1280) || 1280;
-  const endpoint = String(peer.endpoint || 'engage.cloudflareclient.com:2408');
+  // 外层固定走 IPv4 anycast，避免 1.14 对 endpoint 域名的解析依赖；隧道内仍保留 v4+v6。
+  const endpoint = String(env.WARP_ENDPOINT || '162.159.192.1:2408');
   const m = endpoint.match(/^\[?([^\]]+?)\]?:(\d+)$/);
   const host = m ? m[1] : endpoint;
   const port = m ? Number(m[2]) : 2408;
@@ -73,6 +76,11 @@ function wgcfToSingbox(text) {
 
   return {
     log: { level: 'info' },
+    dns: {
+      servers: [{ type: 'https', tag: 'dns-remote', server: String(env.WARP_DNS || '1.1.1.1'), detour: 'warp' }],
+      final: 'dns-remote',
+      strategy: 'prefer_ipv4',
+    },
     endpoints: [wireguard],
     inbounds: [{ type: 'mixed', tag: 'in', listen: '127.0.0.1', listen_port: EGRESS_PORT }],
     outbounds: [{ type: 'direct', tag: 'direct' }],

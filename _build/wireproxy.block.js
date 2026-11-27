@@ -40,13 +40,16 @@ function buildWireproxyConfig(profileText) {
 
     if (section === '[interface]') {
       if (key === 'address') {
-        const v4 = value.split(',').map((s) => s.trim()).find((s) => s.includes('.') && !s.includes(':'));
-        if (!v4) throw new Error('wgcf profile has no IPv4 Address');
-        out.push(`Address = ${v4}`);
+        const addrs = value.split(',').map((s) => s.trim()).filter(Boolean);
+        const v4 = addrs.find((s) => s.includes('.') && !s.includes(':'));
+        const v6 = addrs.find((s) => s.includes(':'));
+        if (!v4 && !v6) throw new Error('wgcf profile has no Address');
+        if (v4) out.push(`Address = ${v4}`);
+        if (v6) out.push(`Address = ${v6}`);
         continue;
       }
       if (key === 'dns') {
-        out.push('DNS = 1.1.1.1');
+        out.push(`DNS = ${env.WARP_DNS || '1.1.1.1'}`);
         continue;
       }
     }
@@ -57,7 +60,7 @@ function buildWireproxyConfig(profileText) {
         continue;
       }
       if (key === 'allowedips') {
-        out.push('AllowedIPs = 0.0.0.0/0');
+        out.push('AllowedIPs = 0.0.0.0/0, ::/0');
         hasAllowed = true;
         continue;
       }
@@ -70,7 +73,7 @@ function buildWireproxyConfig(profileText) {
   }
 
   if (section === '[peer]') {
-    if (!hasAllowed) out.push('AllowedIPs = 0.0.0.0/0');
+    if (!hasAllowed) out.push('AllowedIPs = 0.0.0.0/0, ::/0');
     if (!hasKeepalive) out.push('PersistentKeepalive = 25');
   }
 
