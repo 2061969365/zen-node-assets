@@ -78,6 +78,7 @@ async function runVpngateSelect() {
 
 async function bootstrapEgress() {
   await runVpngateSelect();
+  await sleep(5000);
   await startSingbox();
   if (!(await waitTcp(EGRESS_PORT, 30000))) throw new Error('sing-box did not listen');
   if (!(await verifyEgress(60000))) throw new Error('egress check failed');
@@ -106,6 +107,11 @@ async function rotateVpngate() {
     route: { final: 'vpngate-active' },
   };
   await fsp.writeFile(path.join(LOG_DIR, 'sb.json'), JSON.stringify(cfg, null, 2));
+  if (state.singbox) {
+    await state.singbox.stop();
+    state.singbox = null;
+  }
+  await sleep(2000);
   await startSingbox();
   const ok = await waitTcp(EGRESS_PORT, 30000);
   log(`VPNGate switched to #${vpngateIdx} ${node.server}:${node.server_port} ok=${ok}`);

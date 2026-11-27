@@ -209,8 +209,8 @@ jobs:
           EGRESS_MODE: auto
           ALLOW_DIRECT_FALLBACK: "1"
           LOG_DIR: .zen-egress-${{ matrix.template }}
-          VPNGATE_MAX_CANDIDATES: "10"
-          VPNGATE_KEEP_NODES: "1"
+          VPNGATE_MAX_CANDIDATES: "20"
+          VPNGATE_KEEP_NODES: "3"
           VPNGATE_CONCURRENCY: "5"
         run: |
           set -euo pipefail
