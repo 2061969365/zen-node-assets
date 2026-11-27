@@ -29,7 +29,7 @@ No root, no `package.json`, no `npm install`, no Dockerfile.
 | `NODE_ID` | no | `vpngate-1` / `warp-1` / `warp-wireproxy-1` | node identity |
 | `PUBLIC_URL` | no | auto-detect | public URL used in the manifest |
 | `EGRESS_MODE` | no | `auto` | `auto` = VPN/WARP egress; `direct` = host egress (CI smoke) |
-| `ALLOW_DIRECT_FALLBACK` | no | vpngate `1`, warp `0` | fall back to host egress if the tunnel fails |
+| `ALLOW_DIRECT_FALLBACK` | no | vpngate `1`, warp `0`, warp-wireproxy `0` | fall back to host egress if the tunnel fails |
 | `ASSETS_BASE_URL` | no | Release `v2026.11.27` | override asset source |
 | `ZEN_PORT` | no | `18081` | loopback port for zen-direct |
 | `EGRESS_PORT` | no | `18080` | loopback port for the egress proxy (sing-box / wireproxy) |
@@ -42,6 +42,20 @@ No root, no `package.json`, no `npm install`, no Dockerfile.
 | `WIREPROXY_GOGC` | no | `50` | wireproxy GC percent |
 
 vpngate additionally needs `python3` and `curl` on the host. warp and warp-wireproxy need no Python.
+
+## Memory
+
+Measured on GitHub Actions `ubuntu-latest` (Node 20, amd64) with `scripts/mem.py` reading `/proc/<pid>/smaps_rollup`. Values are PSS in MiB after 60 s idle following four `/v1/chat/completions` requests. "Tunnel" is sing-box or wireproxy.
+
+| Template | Node PSS | Tunnel PSS | zen-direct PSS | Total PSS | Total RSS | Sum HWM |
+|---|---:|---:|---:|---:|---:|---:|
+| `vpngate` | 99.7 | 65.1 | 16.3 | 181.1 | 188.2 | 191.7 |
+| `warp` | 86.8 | 60.9 | 16.4 | 164.1 | 171.4 | 179.6 |
+| `warp-wireproxy` | 98.9 | 13.0 | 15.2 | 127.1 | 132.8 | 136.9 |
+
+`warp-wireproxy` replaces the ~61 MB sing-box process with a ~13 MB wireproxy process, saving roughly 37 MiB PSS versus `warp` and 54 MiB versus `vpngate`. Node RSS is dominated by V8; `SINGBOX_GOMEMLIMIT` / `WIREPROXY_GOMEMLIMIT` cap the Go side.
+
+Runs: `vpngate` and `warp-wireproxy` from [memory 45942525430](https://github.com/2061969365/zen-node-assets/actions/runs/45942525430); `warp` from [memory 45940799384](https://github.com/2061969365/zen-node-assets/actions/runs/45940799384) (WARP tunnel stayed up; on some runners UDP 2408 is blocked and the node falls back to direct).
 
 ## Endpoints
 
