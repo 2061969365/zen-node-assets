@@ -311,8 +311,8 @@ jobs:
           const fs = require('fs');
           const [src, dst, from, to] = process.argv.slice(2);
           let s = fs.readFileSync(src, 'utf8');
-          const a = `const VERSION = ${JSON.stringify(from)}`;
-          const b = `const VERSION = ${JSON.stringify(to)}`;
+          const a = `const VERSION = '${from}'`;
+          const b = `const VERSION = '${to}'`;
           if (!s.includes(a)) { console.error('version marker not found'); process.exit(1); }
           fs.writeFileSync(dst, s.replace(a, b));
           NODE

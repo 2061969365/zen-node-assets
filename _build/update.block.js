@@ -125,8 +125,16 @@ function scheduleRestart(mode) {
   timer.unref();
 }
 
+async function waitBootstrap(timeoutMs) {
+  const deadline = Date.now() + (timeoutMs || 120000);
+  while (bootstrapInFlight && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 250));
+  }
+}
+
 async function doRestart(mode) {
   log(`self-update restart (${mode})`);
+  await waitBootstrap(120000);
   try { await stopAll(); } catch {}
   await closeServer(mode === 'exec' ? 5000 : 3000);
   if (mode === 'exit') {
