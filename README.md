@@ -44,6 +44,7 @@ No root, no `package.json`, no `npm install`, no Dockerfile.
 | `PROBE_MODEL` | no | `deepseek-v4.1-flash-free` | model used for the boot probe |
 | `WARP_ENDPOINT` | no | `162.159.192.1:2408` | outer WireGuard endpoint, kept IPv4 so hosts without IPv6 can connect |
 | `WARP_DNS` | no | `1.1.1.1` | DNS pushed into the tunnel; DoH for `warp`, UDP resolver for `warp-wireproxy` |
+| `WARP_DNS_STRATEGY` | no | `prefer_ipv6` | sing-box resolution strategy for `warp`; `prefer_ipv4` forces IPv4 egress |
 | `VPNGATE_DNS` | no | `1.1.1.1` | DoH server for the vpngate tunnel |
 | `LOG_DIR` | no | `./.zen` | logs and assets |
 | `LOG_MAX_MB` | no | `10` | rotate `node.log` above this size |

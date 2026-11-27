@@ -42,7 +42,7 @@ const { Readable, Transform } = require('stream');
 const { pipeline } = require('stream/promises');
 
 const TEMPLATE = 'warp';
-const VERSION = '2026.11.27.8';
+const VERSION = '2026.11.27.9';
 const DEFAULT_NODE_ID = 'warp-1';
 const DEFAULT_ALLOW_FALLBACK = false;
 const DEFAULT_ASSETS_BASE = 'https://github.com/2061969365/zen-node-assets/releases/download/v2026.11.27';
@@ -1480,7 +1480,7 @@ function wgcfToSingbox(text) {
     dns: {
       servers: [{ type: 'https', tag: 'dns-remote', server: String(env.WARP_DNS || '1.1.1.1'), detour: 'warp' }],
       final: 'dns-remote',
-      strategy: 'prefer_ipv4',
+      strategy: String(env.WARP_DNS_STRATEGY || 'prefer_ipv6'),
     },
     endpoints: [wireguard],
     inbounds: [{ type: 'mixed', tag: 'in', listen: '127.0.0.1', listen_port: EGRESS_PORT }],

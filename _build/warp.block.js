@@ -79,7 +79,7 @@ function wgcfToSingbox(text) {
     dns: {
       servers: [{ type: 'https', tag: 'dns-remote', server: String(env.WARP_DNS || '1.1.1.1'), detour: 'warp' }],
       final: 'dns-remote',
-      strategy: 'prefer_ipv4',
+      strategy: String(env.WARP_DNS_STRATEGY || 'prefer_ipv6'),
     },
     endpoints: [wireguard],
     inbounds: [{ type: 'mixed', tag: 'in', listen: '127.0.0.1', listen_port: EGRESS_PORT }],

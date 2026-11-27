@@ -43,7 +43,7 @@ const { Readable, Transform } = require('stream');
 const { pipeline } = require('stream/promises');
 
 const TEMPLATE = '__TEMPLATE__';
-const VERSION = '2026.11.27.8';
+const VERSION = '2026.11.27.9';
 const DEFAULT_NODE_ID = '__NODE_ID__';
 const DEFAULT_ALLOW_FALLBACK = __ALLOW_FALLBACK__;
 const DEFAULT_ASSETS_BASE = 'https://github.com/2061969365/zen-node-assets/releases/download/v2026.11.27';
