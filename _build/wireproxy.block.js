@@ -77,7 +77,28 @@ function buildWireproxyConfig(profileText) {
     if (!hasKeepalive) out.push('PersistentKeepalive = 25');
   }
 
-  return `${out.join('\n').trimEnd()}\n\n[Resolve]
+  // wireproxy parses Address with `strings.Split(value, ",")` but go-ini
+  // shadows repeated keys, so `Key.String()` returns only one of two separate
+  // `Address =` lines. Merging them into one comma-separated line is the only
+  // way the userspace netstack gets both the v4 and the v6 address (and thus
+  // working IPv6 egress).
+  const merged = [];
+  let addrBuf = [];
+  for (const l of out) {
+    const m = /^Address\s*=\s*(.+)$/i.exec(l);
+    if (m) {
+      addrBuf.push(m[1].trim());
+      continue;
+    }
+    if (addrBuf.length) {
+      merged.push(`Address = ${addrBuf.join(', ')}`);
+      addrBuf = [];
+    }
+    merged.push(l);
+  }
+  if (addrBuf.length) merged.push(`Address = ${addrBuf.join(', ')}`);
+
+  return `${merged.join('\n').trimEnd()}\n\n[Resolve]
 ResolveStrategy = ${env.WARP_RESOLVE_STRATEGY || 'ipv6'}
 
 [http]\nBindAddress = 127.0.0.1:${EGRESS_PORT}\n`;

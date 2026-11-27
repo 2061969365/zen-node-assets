@@ -42,36 +42,40 @@ def main():
     lines.append(f"runner `{runner_ip or 'n/a'}` · Node `{node_version or 'n/a'}` · "
                  "same job, alternating order · `BOOT_PROBE_TRIES=0` · 4 chat calls per run")
     lines.append("")
-    lines.append("| run | mode | state | egress IPv4 | egress IPv6 | chat codes |")
-    lines.append("|---|---|---|---|---|---|")
+    lines.append("| run | template | mode | state | egress IPv4 | egress IPv6 | chat codes |")
+    lines.append("|---|---|---|---|---|---|---|")
     for r in runs:
         mode = "forced IPv4" if r.get("force_v4") else "IPv6 allowed"
-        lines.append("| `{}` | {} | {} | `{}` | `{}` | {} |".format(
-            r.get("label", ""), mode, r.get("state", ""),
+        lines.append("| `{}` | `{}` | {} | {} | `{}` | `{}` | {} |".format(
+            r.get("label", ""), r.get("template", ""), mode, r.get("state", ""),
             r.get("ip", ""), r.get("ip6", "") or "-", ",".join(r.get("codes", []))))
 
     lines.append("")
     lines.append("### Summary")
     lines.append("")
-    lines.append("| mode | runs | IPv6 egress present | chat 200 | chat 429 | other |")
-    lines.append("|---|---:|---:|---:|---:|---:|")
-    for force in (0, 1):
-        group = [r for r in runs if int(r.get("force_v4", 0)) == force]
-        if not group:
-            continue
+    lines.append("| template | mode | runs | IPv6 egress present | chat 200 | chat 429 | other |")
+    lines.append("|---|---|---:|---:|---:|---:|---:|")
+    keys = []
+    for r in runs:
+        k = (r.get("template", ""), int(r.get("force_v4", 0)))
+        if k not in keys:
+            keys.append(k)
+    for tpl, force in keys:
+        group = [r for r in runs if r.get("template", "") == tpl and int(r.get("force_v4", 0)) == force]
         codes = [c for r in group for c in r.get("codes", [])]
         n200 = sum(1 for c in codes if c == "200")
         n429 = sum(1 for c in codes if c == "429")
         other = len(codes) - n200 - n429
         ip6 = sum(1 for r in group if r.get("ip6"))
-        lines.append("| {} | {} | {}/{} | {} | {} | {} |".format(
-            "forced IPv4" if force else "IPv6 allowed",
+        lines.append("| `{}` | {} | {} | {}/{} | {} | {} | {} |".format(
+            tpl, "forced IPv4" if force else "IPv6 allowed",
             len(group), ip6, len(group), n200, n429, other))
 
     lines.append("")
-    lines.append("Read: if `IPv6 allowed` gets far more 200s than `forced IPv4` while both "
-                 "share the same WARP IPv4 pool, IPv6 egress is what dodges the shared-IPv4 "
-                 "free-usage quota. If both are similar, the 429s are pure IPv4 quota luck.")
+    lines.append("Read: with the same WARP IPv4 pool, `IPv6 allowed` should get far more 200s "
+                 "than `forced IPv4` if IPv6 egress is what dodges the shared-IPv4 free-usage "
+                 "quota. `warp-wireproxy` is the case under test: if its IPv6 row matches "
+                 "`warp`'s, the userspace tunnel now carries IPv6 too.")
 
     text = "\n".join(lines)
     print(text)

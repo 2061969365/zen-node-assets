@@ -29,15 +29,17 @@ jobs:
           node --version | tee /tmp/mem/node_version.txt
           echo
 
-      - name: alternate v6 / v4 runs
+      - name: alternate runs
         continue-on-error: true
         run: |
           set -uo pipefail
           i=0
-          for pair in 1 2 3; do
-            bash scripts/ipv6_run.sh "v6-$pair" $((18080 + i * 100)) 0 || true
+          for pair in 1 2; do
+            bash scripts/ipv6_run.sh warp "warp-v6-$pair" $((18080 + i * 100)) 0 || true
             i=$((i + 1))
-            bash scripts/ipv6_run.sh "v4-$pair" $((18080 + i * 100)) 1 || true
+            bash scripts/ipv6_run.sh warp "warp-v4-$pair" $((18080 + i * 100)) 1 || true
+            i=$((i + 1))
+            bash scripts/ipv6_run.sh warp-wireproxy "wp-$pair" $((18080 + i * 100)) 0 || true
             i=$((i + 1))
           done
 

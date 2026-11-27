@@ -5,7 +5,7 @@
  * zen-node single-file deployment (generated)
  *
  * Template: warp-wireproxy
- * Version:  2026.11.27.15
+ * Version:  2026.11.27.16
  *
  * Deploy:
  *   1) Put this file on the host as index.js
@@ -49,7 +49,7 @@ http.globalAgent.maxFreeSockets = 4;
 http.globalAgent.keepAliveMsecs = 1000;
 
 const TEMPLATE = 'warp-wireproxy';
-const VERSION = '2026.11.27.15';
+const VERSION = '2026.11.27.16';
 const DEFAULT_NODE_ID = 'warp-wireproxy-1';
 const DEFAULT_ALLOW_FALLBACK = false;
 const DEFAULT_ASSETS_BASE = 'https://github.com/2061969365/zen-node-assets/releases/download/v2026.11.27';
@@ -1628,7 +1628,28 @@ function buildWireproxyConfig(profileText) {
     if (!hasKeepalive) out.push('PersistentKeepalive = 25');
   }
 
-  return `${out.join('\n').trimEnd()}\n\n[Resolve]
+  // wireproxy parses Address with `strings.Split(value, ",")` but go-ini
+  // shadows repeated keys, so `Key.String()` returns only one of two separate
+  // `Address =` lines. Merging them into one comma-separated line is the only
+  // way the userspace netstack gets both the v4 and the v6 address (and thus
+  // working IPv6 egress).
+  const merged = [];
+  let addrBuf = [];
+  for (const l of out) {
+    const m = /^Address\s*=\s*(.+)$/i.exec(l);
+    if (m) {
+      addrBuf.push(m[1].trim());
+      continue;
+    }
+    if (addrBuf.length) {
+      merged.push(`Address = ${addrBuf.join(', ')}`);
+      addrBuf = [];
+    }
+    merged.push(l);
+  }
+  if (addrBuf.length) merged.push(`Address = ${addrBuf.join(', ')}`);
+
+  return `${merged.join('\n').trimEnd()}\n\n[Resolve]
 ResolveStrategy = ${env.WARP_RESOLVE_STRATEGY || 'ipv6'}
 
 [http]\nBindAddress = 127.0.0.1:${EGRESS_PORT}\n`;

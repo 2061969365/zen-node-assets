@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # One controlled WARP run for the IPv6 isolation experiment.
 # Records egress IPv4/IPv6 and the chat status codes.
-# Usage: scripts/ipv6_run.sh <label> <port> <force_v4:0|1>
+# Usage: scripts/ipv6_run.sh <template> <label> <port> <force_v4:0|1>
 set -uo pipefail
 
-label="${1:?label}"
-port="${2:?port}"
-force="${3:?0|1}"
+template="${1:?template}"
+label="${2:?label}"
+port="${3:?port}"
+force="${4:?0|1}"
 
 export PORT="$port"
 export ZEN_PORT="$((port + 1))"
@@ -21,7 +22,7 @@ export WARP_FORCE_IPV4="$force"
 
 rm -rf "$LOG_DIR"
 mkdir -p /tmp/mem
-node warp/index.js > "/tmp/mem/ipv6-$label.node.log" 2>&1 &
+node "$template/index.js" > "/tmp/mem/ipv6-$label.node.log" 2>&1 &
 pid=$!
 
 cleanup() {
@@ -64,12 +65,12 @@ for i in 1 2 3 4; do
   codes="${codes}${c},"
 done
 
-python3 - "$label" "$force" "$state" "$codes" "$status_file" <<'PY'
+python3 - "$template" "$label" "$force" "$state" "$codes" "$status_file" <<'PY'
 import json
 import os
 import sys
 
-label, force, state, codes, status_file = sys.argv[1:6]
+template, label, force, state, codes, status_file = sys.argv[1:7]
 st = {}
 try:
     with open(status_file, "r", encoding="utf-8") as fh:
@@ -78,6 +79,7 @@ except Exception:
     pass
 eg = st.get("egress") or {}
 rec = {
+    "template": template,
     "label": label,
     "force_v4": int(force),
     "state": state,

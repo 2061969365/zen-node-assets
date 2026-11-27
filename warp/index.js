@@ -5,7 +5,7 @@
  * zen-node single-file deployment (generated)
  *
  * Template: warp
- * Version:  2026.11.27.15
+ * Version:  2026.11.27.16
  *
  * Deploy:
  *   1) Put this file on the host as index.js
@@ -48,7 +48,7 @@ http.globalAgent.maxFreeSockets = 4;
 http.globalAgent.keepAliveMsecs = 1000;
 
 const TEMPLATE = 'warp';
-const VERSION = '2026.11.27.15';
+const VERSION = '2026.11.27.16';
 const DEFAULT_NODE_ID = 'warp-1';
 const DEFAULT_ALLOW_FALLBACK = false;
 const DEFAULT_ASSETS_BASE = 'https://github.com/2061969365/zen-node-assets/releases/download/v2026.11.27';
