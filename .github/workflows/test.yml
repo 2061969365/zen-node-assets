@@ -48,6 +48,7 @@ jobs:
         env:
           PORT: "18080"
           ZEN_PORT: "18081"
+          EGRESS_PORT: "18082"
           NODE_TOKEN: test
           EGRESS_MODE: direct
           LOG_DIR: .zen-${{ matrix.template }}
@@ -80,7 +81,11 @@ jobs:
           grep -q '"run_id"' /tmp/health.json
 
           echo "status"
-          curl -fsS -H "Authorization: Bearer test" "http://127.0.0.1:$PORT/_zen/node/v1/status" > /tmp/status.json
+          for i in $(seq 1 60); do
+            curl -fsS -H "Authorization: Bearer test" "http://127.0.0.1:$PORT/_zen/node/v1/status" > /tmp/status.json
+            if grep -q '"state":"running"' /tmp/status.json; then break; fi
+            sleep 1
+          done
           cat /tmp/status.json
           grep -q '"state":"running"' /tmp/status.json
 
@@ -198,6 +203,7 @@ jobs:
         env:
           PORT: "18080"
           ZEN_PORT: "18081"
+          EGRESS_PORT: "18082"
           NODE_TOKEN: test
           EGRESS_MODE: auto
           ALLOW_DIRECT_FALLBACK: "1"

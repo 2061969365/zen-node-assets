@@ -51,8 +51,16 @@ if (!Number.isInteger(PORT) || PORT <= 0 || PORT > 65535) {
 }
 
 const NODE_ID = env.NODE_ID || DEFAULT_NODE_ID;
-const ZEN_PORT = Number(env.ZEN_PORT || 18081);
-const EGRESS_PORT = Number(env.EGRESS_PORT || 18080);
+
+function distinctPort(value, exclude) {
+  let p = Number(value);
+  if (!Number.isInteger(p) || p <= 0 || p > 65535) p = 18080;
+  while (exclude.includes(p)) p = p >= 65000 ? p - 1 : p + 1;
+  return p;
+}
+
+let ZEN_PORT = distinctPort(env.ZEN_PORT || 18081, [PORT]);
+let EGRESS_PORT = distinctPort(env.EGRESS_PORT || 18080, [PORT, ZEN_PORT]);
 const EGRESS_MODE = String(env.EGRESS_MODE || 'auto').toLowerCase() === 'direct' ? 'direct' : 'auto';
 let ALLOW_DIRECT_FALLBACK = env.ALLOW_DIRECT_FALLBACK == null ? DEFAULT_ALLOW_FALLBACK : env.ALLOW_DIRECT_FALLBACK !== '0';
 let MAX_RUN_SEC = Number(env.MAX_RUN_SEC || 0);
@@ -882,7 +890,7 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
 
 server.listen(PORT, '0.0.0.0', () => {
-  log(`zen-node ${TEMPLATE} ${VERSION} node=${NODE_ID} listening on 0.0.0.0:${PORT} egress=${EGRESS_MODE}`);
+  log(`zen-node ${TEMPLATE} ${VERSION} node=${NODE_ID} listening on 0.0.0.0:${PORT} ports zen=${ZEN_PORT} egress=${EGRESS_PORT} mode=${EGRESS_MODE}`);
   if (!PUBLIC_URL) log('PUBLIC_URL not detected; set it for console node registration');
   startWatchdog();
   startAll().catch((e) => log('bootstrap failed:', e.message));
