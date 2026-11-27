@@ -435,11 +435,12 @@ async function startSingbox() {
 }
 
 async function stopEgress() {
-  if (state.singbox) {
-    await state.singbox.stop();
-    state.singbox = null;
+  const sb = state.singbox;
+  if (sb) {
+    await sb.stop();
+    if (state.singbox === sb) state.singbox = null;
   }
-  state.egress.state = 'stopped';
+  if (!state.singbox) state.egress.state = 'stopped';
 }
 
 async function verifyEgress() {
@@ -557,12 +558,13 @@ async function startAll() {
 
 async function stopAll() {
   state.phase = 'stopped';
-  if (state.gateway) {
-    await state.gateway.stop();
-    state.gateway = null;
+  const gw = state.gateway;
+  if (gw) {
+    await gw.stop();
+    if (state.gateway === gw) state.gateway = null;
   }
   await stopEgress();
-  state.gatewayHealth = null;
+  if (!state.gateway) state.gatewayHealth = null;
 }
 
 async function restartAll() {
