@@ -76,8 +76,44 @@ Management (`Authorization: Bearer $NODE_TOKEN`):
 - `POST /_zen/node/v1/restart`
 - `POST /_zen/node/v1/rotate`
 - `POST /_zen/node/v1/apply`
+- `POST /_zen/node/v1/update`
+- `POST /_zen/node/v1/rollback`
 
-The console can register this host as a native node using the public URL + `/health` + `/v1`; the management endpoints are for start/stop/restart/rotate.
+The console can register this host as a native node using the public URL + `/health` + `/v1`; the management endpoints are for start/stop/restart/rotate/update.
+
+## Self-update
+
+`POST /_zen/node/v1/update` (Bearer `NODE_TOKEN`) replaces `index.js` after SHA256 and syntax checks, keeps `index.js.bak`, then restarts.
+
+```bash
+VERSION=2026.11.28.1
+SHA=$(sha256sum new-index.js | awk '{print $1}')
+node -e '
+  const fs=require("fs");
+  const content=fs.readFileSync("new-index.js").toString("base64");
+  fs.writeFileSync("body.json", JSON.stringify({
+    template:"warp-wireproxy", version:process.argv[1], sha256:process.argv[2],
+    content, restart:true, restartMode:"exec"
+  }));
+' "$VERSION" "$SHA"
+
+curl -fsS -X POST \
+  -H "Authorization: Bearer $NODE_TOKEN" \
+  -H "Content-Type: application/json" \
+  --data-binary @body.json \
+  "http://127.0.0.1:$PORT/_zen/node/v1/update"
+```
+
+`restartMode`:
+
+- `exec` — spawn the new process, then exit (no supervisor needed)
+- `exit` — exit 0 and let the platform restart (Render/Railway/Koyeb/Fly/Zeabur)
+- `crash` — exit 1 and let the panel restart (Pterodactyl/KataBump)
+- omit to auto-detect
+
+`restart:false` stages the file without restarting. `POST /_zen/node/v1/rollback` restores `index.js.bak`.
+
+Console integration plan: [docs/console-native-template-push.md](docs/console-native-template-push.md).
 
 ## Assets
 
@@ -97,6 +133,7 @@ Release `v2026.11.27` contains:
 
 - `smoke-*`: `EGRESS_MODE=direct`, required — syntax, asset checksum, health, status/auth, SSE, restart, stop/start, rotate, watchdog.
 - `egress-*`: `EGRESS_MODE=auto`, non-blocking — real VPNGate/WARP/wireproxy egress report.
+- `update-*`: self-update — bad SHA rejected, version bump applied, process restarted, `.bak` created, rollback restores the old version.
 
 ## Regenerate
 
