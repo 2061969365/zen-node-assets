@@ -1,5 +1,7 @@
 .zen*/
 node_modules/
+__pycache__/
+*.pyc
 npm-debug.log*
 zen-direct
 sing-box
