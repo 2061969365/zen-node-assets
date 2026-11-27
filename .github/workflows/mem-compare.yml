@@ -27,6 +27,7 @@ jobs:
           set -euo pipefail
           mkdir -p /tmp/mem
           curl -fsS --max-time 20 https://api.ipify.org | tee /tmp/mem/runner_ip.txt
+          node --version | tee /tmp/mem/node_version.txt
           echo
 
       - name: measure warp
@@ -39,8 +40,6 @@ jobs:
 
       - name: table
         if: always()
-        env:
-          NODE_VERSION: ${{ steps.node.outputs.node-version }}
         run: python3 scripts/mem_table.py
 
       - name: upload

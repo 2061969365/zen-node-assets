@@ -28,11 +28,25 @@ def read_rollup(pid):
         with open(f"/proc/{pid}/smaps_rollup", "r", encoding="utf-8", errors="replace") as fh:
             for line in fh:
                 parts = line.split()
-                if len(parts) >= 2 and parts[1].lower() == "kb":
+                if len(parts) >= 3 and parts[2].lower() == "kb":
                     out[parts[0].rstrip(":")] = int(parts[1]) * 1024
     except OSError:
         return {}
-    return out
+    if out:
+        return out
+    # Older kernels without smaps_rollup: sum the per-VMA smaps file.
+    sums = {}
+    try:
+        with open(f"/proc/{pid}/smaps", "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                parts = line.split()
+                if len(parts) >= 3 and parts[2].lower() == "kb" and parts[0].rstrip(":") in (
+                        "Pss", "Rss", "Private_Dirty", "Private_Clean", "Shared_Clean", "Shared_Dirty", "Anonymous"):
+                    key = parts[0].rstrip(":")
+                    sums[key] = sums.get(key, 0) + int(parts[1]) * 1024
+    except OSError:
+        return {}
+    return sums
 
 
 def read_comm(pid):
@@ -79,18 +93,16 @@ def tree(root):
     return out
 
 
-def role_for(comm, cmdline):
+def role_for(comm, cmdline, is_root):
+    if is_root:
+        return "node"
     text = f"{comm} {cmdline}".lower()
     if "zen-direct" in text:
         return "gateway"
-    if "sing-box" in text:
-        return "tunnel"
-    if "wireproxy" in text:
+    if "sing-box" in text or "wireproxy" in text:
         return "tunnel"
     if "wgcf" in text:
         return "helper"
-    if comm.startswith("node"):
-        return "node"
     return "other"
 
 
@@ -127,8 +139,8 @@ def main():
 
         procs.append({
             "pid": pid,
-            "comm": comm,
-            "role": role_for(comm, cmd),
+            "comm": comm if comm and comm != "MainThread" else (os.path.basename(cmd.split()[0]) if cmd else comm),
+            "role": role_for(comm, cmd, pid == args.root),
             "cmdline": cmd[:200],
             "pss": ru.get("Pss", 0),
             "rss": ru.get("Rss", kb("VmRSS")),

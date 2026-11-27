@@ -39,11 +39,18 @@ def main():
     except Exception:
         pass
 
+    node_version = ""
+    try:
+        with open("/tmp/mem/node_version.txt", "r", encoding="utf-8") as fh:
+            node_version = fh.read().strip()
+    except Exception:
+        pass
+
     order = [t for t in ("warp", "warp-wireproxy") if t in mem] or sorted(mem)
     lines = []
     lines.append("## warp vs warp-wireproxy memory (same runner, same job)")
     lines.append("")
-    lines.append(f"runner egress IP: `{runner_ip or 'n/a'}` · Node `{os.environ.get('NODE_VERSION', '')}` · "
+    lines.append(f"runner egress IP: `{runner_ip or 'n/a'}` · Node `{node_version or 'n/a'}` · "
                  "boot probe disabled (`BOOT_PROBE_TRIES=0`) so the sample is stable · 4 chat calls + 45 s idle")
     lines.append("")
     lines.append("| template | Node PSS | gateway PSS | tunnel PSS | total PSS | total RSS | max HWM | Node threads | CodeSpace | egress IPv4 | egress IPv6 | chat | state |")
