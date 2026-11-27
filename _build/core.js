@@ -443,21 +443,36 @@ async function stopEgress() {
   if (!state.singbox) state.egress.state = 'stopped';
 }
 
-async function verifyEgress() {
-  try {
-    const r = await proxyHttpGet(EGRESS_PORT, 'http://api.ipify.org', 10000);
-    const ip = String(r.body || '').trim();
-    if (r.status === 200 && /^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) {
-      state.egress.ip = ip;
-      state.egress.state = 'running';
-      state.egress.lastCheck = new Date().toISOString();
-      state.lastEgressCheck = Date.now();
-      return true;
+const EGRESS_CHECK_URLS = [
+  'http://api.ipify.org',
+  'http://icanhazip.com',
+  'http://checkip.amazonaws.com',
+  'http://ipinfo.io/ip',
+];
+
+async function verifyEgress(timeoutMs = 30000) {
+  const deadline = Date.now() + timeoutMs;
+  let last = 'no attempt';
+  while (Date.now() < deadline) {
+    for (const url of EGRESS_CHECK_URLS) {
+      try {
+        const r = await proxyHttpGet(EGRESS_PORT, url, 6000);
+        const ip = String(r.body || '').trim().split(/\s+/)[0];
+        if (r.status === 200 && /^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) {
+          state.egress.ip = ip;
+          state.egress.state = 'running';
+          state.egress.lastCheck = new Date().toISOString();
+          state.lastEgressCheck = Date.now();
+          return true;
+        }
+        last = `${url} status=${r.status} body=${String(r.body || '').slice(0, 40)}`;
+      } catch (e) {
+        last = `${url} ${e.message}`;
+      }
     }
-    log(`egress check unexpected status=${r.status} body=${ip.slice(0, 80)}`);
-  } catch (e) {
-    log('egress check failed:', e.message);
+    await sleep(2000);
   }
+  log(`egress check failed: ${last}`);
   state.egress.state = 'error';
   state.egress.lastCheck = new Date().toISOString();
   return false;
@@ -591,7 +606,7 @@ async function rotate() {
     log('rotate start');
     if (EGRESS_MODE === 'auto') {
       await rotateEgress();
-      if (!(await verifyEgress())) throw new Error('egress check after rotate failed');
+      if (!(await verifyEgress(60000))) throw new Error('egress check after rotate failed');
     }
     if (state.gateway) await state.gateway.stop();
     startGateway(EGRESS_MODE === 'auto');

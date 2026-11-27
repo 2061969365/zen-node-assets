@@ -111,7 +111,7 @@ async function bootstrapEgress() {
   await prepareWarp();
   await startSingbox();
   if (!(await waitTcp(EGRESS_PORT, 30000))) throw new Error('sing-box did not listen');
-  if (!(await verifyEgress())) throw new Error('egress check failed');
+  if (!(await verifyEgress(60000))) throw new Error('egress check failed');
 }
 
 async function rotateEgress() {
