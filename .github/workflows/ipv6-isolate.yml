@@ -1,0 +1,62 @@
+name: ipv6-isolate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ASSETS_BASE_URL: https://github.com/2061969365/zen-node-assets/releases/download/v2026.11.27
+
+jobs:
+  isolate:
+    name: warp-ipv6-vs-forced-ipv4
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: runner ip
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/mem
+          curl -fsS --max-time 20 https://api.ipify.org | tee /tmp/mem/runner_ip.txt
+          node --version | tee /tmp/mem/node_version.txt
+          echo
+
+      - name: alternate v6 / v4 runs
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          i=0
+          for pair in 1 2 3; do
+            bash scripts/ipv6_run.sh "v6-$pair" $((18080 + i * 100)) 0 || true
+            i=$((i + 1))
+            bash scripts/ipv6_run.sh "v4-$pair" $((18080 + i * 100)) 1 || true
+            i=$((i + 1))
+          done
+
+      - name: table
+        if: always()
+        run: python3 scripts/ipv6_table.py
+
+      - name: upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ipv6-isolate
+          include-hidden-files: true
+          path: |
+            /tmp/mem/ipv6.jsonl
+            /tmp/mem/ipv6-*.json
+            /tmp/mem/ipv6-*.node.log
+            /tmp/mem/runner_ip.txt
+            /tmp/mem/node_version.txt
+            .zen-ipv6-*/*.log
+            .zen-ipv6-*/*.json
+          if-no-files-found: ignore

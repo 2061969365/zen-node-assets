@@ -35,11 +35,14 @@ function wgcfToSingbox(text) {
   const publicKey = peer.publickey;
   if (!privateKey || !publicKey) throw new Error('wgcf profile missing PrivateKey/PublicKey');
 
-  const addresses = String(iface.address || '')
+  const forceV4 = String(env.WARP_FORCE_IPV4 || '') === '1';
+  const allAddresses = String(iface.address || '')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
-  if (addresses.length === 0) throw new Error('wgcf profile missing Address');
+  if (allAddresses.length === 0) throw new Error('wgcf profile missing Address');
+  const addresses = forceV4 ? allAddresses.filter((a) => !a.includes(':')) : allAddresses;
+  if (addresses.length === 0) throw new Error('wgcf profile has no IPv4 Address (WARP_FORCE_IPV4)');
 
   const mtu = Number(iface.mtu || 1280) || 1280;
   // 外层固定走 IPv4 anycast，避免 1.14 对 endpoint 域名的解析依赖；隧道内仍保留 v4+v6。
@@ -47,10 +50,12 @@ function wgcfToSingbox(text) {
   const m = endpoint.match(/^\[?([^\]]+?)\]?:(\d+)$/);
   const host = m ? m[1] : endpoint;
   const port = m ? Number(m[2]) : 2408;
-  const allowed = String(peer.allowedips || '0.0.0.0/0,::/0')
+  const allAllowed = String(peer.allowedips || '0.0.0.0/0,::/0')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
+  const allowed = forceV4 ? allAllowed.filter((a) => !a.includes(':')) : allAllowed;
+  if (allowed.length === 0) throw new Error('wgcf profile has no IPv4 allowed_ips (WARP_FORCE_IPV4)');
 
   const wireguard = {
     type: 'wireguard',
@@ -79,7 +84,7 @@ function wgcfToSingbox(text) {
     dns: {
       servers: [{ type: 'https', tag: 'dns-remote', server: String(env.WARP_DNS || '1.1.1.1'), detour: 'warp' }],
       final: 'dns-remote',
-      strategy: String(env.WARP_DNS_STRATEGY || 'prefer_ipv6'),
+      strategy: forceV4 ? 'ipv4_only' : String(env.WARP_DNS_STRATEGY || 'prefer_ipv6'),
     },
     endpoints: [wireguard],
     inbounds: [{ type: 'mixed', tag: 'in', listen: '127.0.0.1', listen_port: EGRESS_PORT }],
