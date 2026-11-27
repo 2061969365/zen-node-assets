@@ -25,7 +25,7 @@ No root, no `package.json`, no `npm install`, no Dockerfile.
 | Name | Required | Default | Meaning |
 |---|---|---|---|
 | `PORT` | yes | — | platform port; also reads `SERVER_PORT` / `P_SERVER_PORT` (Pterodactyl/KataBump) |
-| `NODE_TOKEN` | no | generated | management bearer; written to `./.zen/node-token` |
+| `NODE_TOKEN` | no | fixed default | management bearer; `NODE_TOKEN` env overrides; effective value is written to `./.zen/node-token` |
 | `NODE_ID` | no | `vpngate-1` / `warp-1` / `warp-wireproxy-1` | node identity |
 | `PUBLIC_URL` | no | auto-detect | public URL used in the manifest |
 | `EGRESS_MODE` | no | `auto` | `auto` = VPN/WARP egress; `direct` = host egress (CI smoke) |
@@ -39,6 +39,11 @@ No root, no `package.json`, no `npm install`, no Dockerfile.
 | `ROTATE_EGRESS_FAILS` | no | `3` | rotate after N consecutive egress failures |
 | `ROTATE_INTERVAL_SEC` | no | `0` | periodic rotate interval; 0 disables |
 | `LOG_DIR` | no | `./.zen` | logs and assets |
+| `LOG_MAX_MB` | no | `10` | rotate `node.log` above this size |
+| `LOG_KEEP` | no | `3` | rotated `node.log` files to keep |
+| `LOG_CHILD_MAX_MB` | no | `LOG_MAX_MB` | truncate any other `*.log` above this size, keeping the last 256 KiB |
+| `LOG_SWEEP_INTERVAL_SEC` | no | `600` | log sweep interval |
+| `LOG_MAX_AGE_DAYS` | no | `7` | delete logs older than N days; `0` disables |
 | `SINGBOX_GOMEMLIMIT` | no | `64MiB` | Go heap cap for sing-box (vpngate/warp) |
 | `SINGBOX_GOGC` | no | `50` | sing-box GC percent |
 | `WIREPROXY_GOMEMLIMIT` | no | `32MiB` | Go heap cap for wireproxy |
@@ -46,9 +51,11 @@ No root, no `package.json`, no `npm install`, no Dockerfile.
 
 vpngate additionally needs `python3` and `curl` on the host. warp and warp-wireproxy need no Python.
 
+`NODE_TOKEN` no longer regenerates on restart: it uses `NODE_TOKEN` if set, otherwise the fixed default baked into `index.js`. The effective token is always written to `LOG_DIR/node-token`. Because the default is public in this repo, set `NODE_TOKEN` per node if the management API is reachable from untrusted networks.
+
 ## Memory
 
-Measured on GitHub Actions `ubuntu-latest` (Node 20, amd64) with `scripts/mem.py` reading `/proc/<pid>/smaps_rollup`. Values are PSS in MiB after 60 s idle following four `/v1/chat/completions` requests. "Tunnel" is sing-box or wireproxy.
+Measured on GitHub Actions `ubuntu-latest` (Node 20, amd64) from `/proc/<pid>/smaps_rollup` in a one-off run; the measurement harness is not kept in the repo. Values are PSS in MiB after 60 s idle following four `/v1/chat/completions` requests. "Tunnel" is sing-box or wireproxy.
 
 | Template | Node PSS | Tunnel PSS | zen-direct PSS | Total PSS | Total RSS | Sum HWM |
 |---|---:|---:|---:|---:|---:|---:|
@@ -129,10 +136,14 @@ The node polls `/health` every 15 s. A rotate is triggered by:
 
 Per template:
 
-- `vpngate` — switches to the next verified node; marks the current node burned on 429/egress failure. When every verified node is burned, it re-runs selection and fetches a fresh batch.
+- `vpngate` — marks the current node burned on 429/egress failure and switches to the next verified node. Burns happen one at a time; when the last verified node is burned, it immediately re-runs selection and fetches a fresh batch. Manual/interval/max-run rotates do not burn, they just cycle through the verified nodes.
 - `warp` / `warp-wireproxy` — deletes the wgcf account/profile, re-registers, and rebuilds the tunnel, giving a new WARP identity/IP.
 
 After a successful rotate the gateway restarts and the `up429` baseline resets. `POST /_zen/node/v1/apply` also accepts `ROTATE_429_THRESHOLD`, `ROTATE_EGRESS_FAILS`, `ROTATE_INTERVAL_SEC` at runtime.
+
+## Logs
+
+`node.log` is rotated by size (`LOG_MAX_MB`, `LOG_KEEP`). Every other log in `LOG_DIR` — `gateway.log`, `gateway.stdio.log`, `sing-box.log`, `wireproxy.log`, `command.log`, `preflight.log`, `vpngate-select.log`, `wgcf.log`, `wireproxy-configtest.log` — is swept every `LOG_SWEEP_INTERVAL_SEC`: files above `LOG_CHILD_MAX_MB` are truncated to their last 256 KiB, and files older than `LOG_MAX_AGE_DAYS` are deleted. The sweep runs at startup and is reported in `/status` under `logs`.
 
 ## Assets
 

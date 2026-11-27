@@ -42,7 +42,7 @@ const { Readable, Transform } = require('stream');
 const { pipeline } = require('stream/promises');
 
 const TEMPLATE = 'vpngate';
-const VERSION = '2026.11.27.5';
+const VERSION = '2026.11.27.7';
 const DEFAULT_NODE_ID = 'vpngate-1';
 const DEFAULT_ALLOW_FALLBACK = true;
 const DEFAULT_ASSETS_BASE = 'https://github.com/2061969365/zen-node-assets/releases/download/v2026.11.27';
@@ -84,12 +84,11 @@ const LOG_MAX_MB = Number(env.LOG_MAX_MB || 10);
 const LOG_KEEP = Number(env.LOG_KEEP || 3);
 const BOOT_ID = crypto.randomUUID();
 
-let NODE_TOKEN = env.NODE_TOKEN || '';
-if (!NODE_TOKEN) {
-  NODE_TOKEN = crypto.randomBytes(24).toString('hex');
-  fs.mkdirSync(LOG_DIR, { recursive: true });
-  fs.writeFileSync(path.join(LOG_DIR, 'node-token'), NODE_TOKEN + '\n', { mode: 0o600 });
-}
+// 固定默认管理口令，重启不变；多节点部署用 NODE_TOKEN 环境变量按节点覆盖。
+const DEFAULT_NODE_TOKEN = '3f9a7c1e5b2d8460a1c9e7f3b5d28064e6a4c2f8d1b7e93a';
+let NODE_TOKEN = String(env.NODE_TOKEN || DEFAULT_NODE_TOKEN).trim() || DEFAULT_NODE_TOKEN;
+fs.mkdirSync(LOG_DIR, { recursive: true });
+fs.writeFileSync(path.join(LOG_DIR, 'node-token'), NODE_TOKEN + '\n', { mode: 0o600 });
 
 function resolvePublicUrl() {
   const clean = (v) => String(v || '').replace(/\/+$/, '');
@@ -126,6 +125,55 @@ function rotateLog() {
     }
     fs.renameSync(LOG_FILE, `${LOG_FILE}.1`);
   } catch {}
+}
+
+// 子进程日志（gateway/sing-box/wireproxy/命令输出）不受 node.log 轮转覆盖，
+// 这里定期按大小截断并按天数清理，避免长期运行把磁盘写满。
+const LOG_SWEEP_INTERVAL_SEC = Math.max(60, Number(env.LOG_SWEEP_INTERVAL_SEC || 600));
+const LOG_CHILD_MAX_MB = Math.max(1, Number(env.LOG_CHILD_MAX_MB || LOG_MAX_MB));
+const LOG_MAX_AGE_DAYS = Math.max(0, Number(env.LOG_MAX_AGE_DAYS || 7));
+let lastLogSweepAt = 0;
+let logSweepTimer = null;
+
+function sweepLogs() {
+  const maxBytes = LOG_CHILD_MAX_MB * 1024 * 1024;
+  const maxAgeMs = LOG_MAX_AGE_DAYS * 86400000;
+  let names;
+  try { names = fs.readdirSync(LOG_DIR); } catch { return; }
+  const now = Date.now();
+  let trimmed = 0;
+  let removed = 0;
+  for (const name of names) {
+    if (name === 'node.log' || !/\.log(\.\d+)?$/.test(name)) continue;
+    const p = path.join(LOG_DIR, name);
+    let st;
+    try { st = fs.statSync(p); } catch { continue; }
+    if (!st.isFile()) continue;
+    if (maxAgeMs > 0 && now - st.mtimeMs > maxAgeMs) {
+      try { fs.unlinkSync(p); removed++; } catch {}
+      continue;
+    }
+    if (st.size <= maxBytes) continue;
+    try {
+      const keep = Math.min(st.size, 256 * 1024);
+      const fd = fs.openSync(p, 'r');
+      const buf = Buffer.alloc(keep);
+      try { fs.readSync(fd, buf, 0, keep, st.size - keep); } finally { fs.closeSync(fd); }
+      fs.writeFileSync(p, `--- truncated ${new Date().toISOString()} was=${st.size}B ---\n` + buf.toString('utf8'));
+      trimmed++;
+    } catch {
+      try { fs.truncateSync(p, 0); trimmed++; } catch {}
+    }
+  }
+  lastLogSweepAt = now;
+  if (trimmed || removed) log(`logs swept: trimmed=${trimmed} removed=${removed}`);
+}
+
+function startLogSweeper() {
+  if (logSweepTimer) return;
+  sweepLogs();
+  logSweepTimer = setInterval(sweepLogs, LOG_SWEEP_INTERVAL_SEC * 1000);
+  if (logSweepTimer.unref) logSweepTimer.unref();
 }
 
 function log(...args) {
@@ -828,6 +876,12 @@ async function status() {
       intervalSec: ROTATE_INTERVAL_SEC,
       lastAt: state.lastRotateAt ? new Date(state.lastRotateAt).toISOString() : '',
     },
+    logs: {
+      lastSweepAt: lastLogSweepAt ? new Date(lastLogSweepAt).toISOString() : '',
+      sweepIntervalSec: LOG_SWEEP_INTERVAL_SEC,
+      childMaxMB: LOG_CHILD_MAX_MB,
+      maxAgeDays: LOG_MAX_AGE_DAYS,
+    },
     gateway,
     egress: state.egress,
   };
@@ -1005,6 +1059,7 @@ server.listen(PORT, '0.0.0.0', () => {
   log(`zen-node ${TEMPLATE} ${VERSION} node=${NODE_ID} listening on 0.0.0.0:${PORT} ports zen=${ZEN_PORT} egress=${EGRESS_PORT} mode=${EGRESS_MODE}`);
   if (!PUBLIC_URL) log('PUBLIC_URL not detected; set it for console node registration');
   startWatchdog();
+  startLogSweeper();
   startAll().catch((e) => log('bootstrap failed:', e.message));
 });
 
