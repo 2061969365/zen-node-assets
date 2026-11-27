@@ -3,6 +3,7 @@ node_modules/
 npm-debug.log*
 zen-direct
 sing-box
+wireproxy
 wgcf
 sha256sums.txt
 probe_and_select_vpngate.py

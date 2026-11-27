@@ -24,6 +24,8 @@ jobs:
             assets: "zen-direct sing-box vpngate_to_singbox.py probe_and_select_vpngate.py sha256sums.txt"
           - template: warp
             assets: "zen-direct sing-box wgcf sha256sums.txt"
+          - template: warp-wireproxy
+            assets: "zen-direct wireproxy wgcf sha256sums.txt"
     steps:
       - uses: actions/checkout@v4
 
@@ -193,6 +195,7 @@ jobs:
         include:
           - template: vpngate
           - template: warp
+          - template: warp-wireproxy
     steps:
       - uses: actions/checkout@v4
 

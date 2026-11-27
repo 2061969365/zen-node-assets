@@ -17,6 +17,7 @@ jobs:
         include:
           - template: vpngate
           - template: warp
+          - template: warp-wireproxy
     steps:
       - uses: actions/checkout@v4
 
