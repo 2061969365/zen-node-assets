@@ -42,7 +42,7 @@ const { Readable, Transform } = require('stream');
 const { pipeline } = require('stream/promises');
 
 const TEMPLATE = 'warp';
-const VERSION = '2026.11.27.3';
+const VERSION = '2026.11.27.4';
 const DEFAULT_NODE_ID = 'warp-1';
 const DEFAULT_ALLOW_FALLBACK = false;
 const DEFAULT_ASSETS_BASE = 'https://github.com/2061969365/zen-node-assets/releases/download/v2026.11.27';

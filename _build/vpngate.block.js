@@ -2,8 +2,12 @@
 
 const PYTHON_BIN = env.PYTHON_BIN || 'python3';
 const VPNGATE_CSV_URL = env.VPNGATE_CSV_URL || 'https://www.vpngate.net/api/iphone/';
-const VPNGATE_MAX_CANDIDATES = Math.max(1, Number(env.VPNGATE_MAX_CANDIDATES || 35));
-const VPNGATE_CONCURRENCY = Math.max(1, Number(env.VPNGATE_CONCURRENCY || 20));
+// Pterodactyl/KataBump containers have a low thread/process limit; keep the
+// probe pool small there. Override with VPNGATE_* when the host allows more.
+const PANEL_HOST = !!(env.SERVER_PORT || env.P_SERVER_PORT || env.KATABUMP_PORT);
+const VPNGATE_MAX_CANDIDATES = Math.max(1, Number(env.VPNGATE_MAX_CANDIDATES || (PANEL_HOST ? 10 : 35)));
+const VPNGATE_CONCURRENCY = Math.max(1, Number(env.VPNGATE_CONCURRENCY || (PANEL_HOST ? 4 : 20)));
+const VPNGATE_PHASE1_CONCURRENCY = Math.max(1, Number(env.VPNGATE_PHASE1_CONCURRENCY || (PANEL_HOST ? 12 : 50)));
 const VPNGATE_KEEP_NODES = Math.max(1, Number(env.VPNGATE_KEEP_NODES || 3));
 
 let vpngatePreflightDone = false;
@@ -59,6 +63,7 @@ async function runVpngateSelect() {
     '--zen-bin', ZEN_DIRECT_PATH,
     '--singbox-bin', SINGBOX_PATH,
     '--concurrency', String(VPNGATE_CONCURRENCY),
+    '--phase1-concurrency', String(VPNGATE_PHASE1_CONCURRENCY),
     '--max-candidates', String(VPNGATE_MAX_CANDIDATES),
     '--keep-nodes', String(VPNGATE_KEEP_NODES),
     '--mixed-port', String(EGRESS_PORT),
