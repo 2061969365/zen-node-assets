@@ -1,0 +1,111 @@
+name: memory
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mem:
+    name: mem-${{ matrix.template }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - template: vpngate
+          - template: warp
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: measure
+        env:
+          PORT: "18080"
+          ZEN_PORT: "18081"
+          EGRESS_PORT: "18082"
+          NODE_TOKEN: test
+          EGRESS_MODE: auto
+          ALLOW_DIRECT_FALLBACK: "1"
+          LOG_DIR: .zen-mem-${{ matrix.template }}
+          VPNGATE_MAX_CANDIDATES: "10"
+          VPNGATE_KEEP_NODES: "3"
+          VPNGATE_CONCURRENCY: "5"
+        run: |
+          set -euo pipefail
+          node "${{ matrix.template }}/index.js" > "/tmp/mem-${{ matrix.template }}.log" 2>&1 &
+          node_pid=$!
+          cleanup() {
+            kill "$node_pid" 2>/dev/null || true
+            wait "$node_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          code=""
+          for i in $(seq 1 900); do
+            code=$(curl -s -o /tmp/mem-health.json -w '%{http_code}' "http://127.0.0.1:$PORT/health" || true)
+            [ "$code" = "200" ] && break
+            sleep 1
+          done
+          cat /tmp/mem-health.json || true
+          [ "$code" = "200" ]
+
+          curl -fsS -H "Authorization: Bearer test" \
+            "http://127.0.0.1:$PORT/_zen/node/v1/status" \
+            > "/tmp/mem-status-${{ matrix.template }}.json"
+          jq -c '{state,runId,egressIp,egress:.egress.state}' "/tmp/mem-status-${{ matrix.template }}.json"
+
+          sleep 30
+          python3 scripts/mem.py "$node_pid" idle \
+            | tee "/tmp/mem-${{ matrix.template }}-idle.json"
+
+          v1_code=$(curl -sS -o "/tmp/mem-sse-${{ matrix.template }}.txt" -w '%{http_code}' --max-time 60 -N \
+            -H "Authorization: Bearer public" \
+            -H "Content-Type: application/json" \
+            -d '{"model":"deepseek-v4.1-flash-free","messages":[{"role":"user","content":"Reply with ok"}],"max_tokens":16,"stream":true}' \
+            "http://127.0.0.1:$PORT/v1/chat/completions" || true)
+          echo "v1 status=$v1_code"
+          sleep 5
+          python3 scripts/mem.py "$node_pid" after1 \
+            | tee "/tmp/mem-${{ matrix.template }}-after1.json"
+
+          for i in 1 2 3; do
+            curl -sS -o /dev/null --max-time 60 -N \
+              -H "Authorization: Bearer public" \
+              -H "Content-Type: application/json" \
+              -d '{"model":"deepseek-v4.1-flash-free","messages":[{"role":"user","content":"Reply with ok"}],"max_tokens":16,"stream":true}' \
+              "http://127.0.0.1:$PORT/v1/chat/completions" || true
+          done
+          sleep 5
+          python3 scripts/mem.py "$node_pid" after4 \
+            | tee "/tmp/mem-${{ matrix.template }}-after4.json"
+
+          sleep 30
+          python3 scripts/mem.py "$node_pid" idle60 \
+            | tee "/tmp/mem-${{ matrix.template }}-idle60.json"
+
+          echo "=== summary ==="
+          for f in /tmp/mem-${{ matrix.template }}-*.json; do
+            jq -r '"\(.label): total_rss=\(.total_rss_mb)MB total_pss=\(.total_pss_mb)MB " + ([.rows[] | "\(.comm)=\(.rss_mb)MB/\(.pss_mb)MB"] | join(" "))' "$f"
+          done
+
+      - name: upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mem-${{ matrix.template }}
+          include-hidden-files: true
+          path: |
+            /tmp/mem-${{ matrix.template }}.log
+            /tmp/mem-${{ matrix.template }}-*.json
+            /tmp/mem-health.json
+            /tmp/mem-status-${{ matrix.template }}.json
+            /tmp/mem-sse-${{ matrix.template }}.txt
+            .zen-mem-${{ matrix.template }}/*.log
+            .zen-mem-${{ matrix.template }}/*.json
+          if-no-files-found: ignore
