@@ -1015,6 +1015,76 @@ async function ensureTemplateAssets() {
   WGCF_PATH = await ensureAsset('wgcf', `${ASSETS_BASE_URL}/wgcf`, true);
 }
 
+function buildWireproxyConfig(profileText) {
+  const lines = String(profileText).split(/\r?\n/);
+  const out = [];
+  const endpoint = env.WARP_ENDPOINT || '162.159.192.1:2408';
+  let section = '';
+  let hasKeepalive = false;
+  let hasAllowed = false;
+
+  for (const raw of lines) {
+    const line = raw.trim();
+    const sec = line.match(/^\[(.+)\]$/);
+    if (sec) {
+      if (section === '[peer]' && !hasKeepalive) out.push('PersistentKeepalive = 25');
+      section = `[${sec[1].trim().toLowerCase()}]`;
+      hasKeepalive = false;
+      hasAllowed = false;
+      out.push(`[${sec[1].trim()}]`);
+      continue;
+    }
+    if (!line || line.startsWith('#') || line.startsWith(';')) {
+      out.push(raw);
+      continue;
+    }
+    const idx = line.indexOf('=');
+    if (idx < 0) {
+      out.push(raw);
+      continue;
+    }
+    const key = line.slice(0, idx).trim().toLowerCase();
+    const value = line.slice(idx + 1).trim();
+
+    if (section === '[interface]') {
+      if (key === 'address') {
+        const v4 = value.split(',').map((s) => s.trim()).find((s) => s.includes('.') && !s.includes(':'));
+        if (!v4) throw new Error('wgcf profile has no IPv4 Address');
+        out.push(`Address = ${v4}`);
+        continue;
+      }
+      if (key === 'dns') {
+        out.push('DNS = 1.1.1.1');
+        continue;
+      }
+    }
+
+    if (section === '[peer]') {
+      if (key === 'endpoint') {
+        out.push(`Endpoint = ${endpoint}`);
+        continue;
+      }
+      if (key === 'allowedips') {
+        out.push('AllowedIPs = 0.0.0.0/0');
+        hasAllowed = true;
+        continue;
+      }
+      if (key === 'persistentkeepalive') {
+        hasKeepalive = true;
+      }
+    }
+
+    out.push(raw);
+  }
+
+  if (section === '[peer]') {
+    if (!hasAllowed) out.push('AllowedIPs = 0.0.0.0/0');
+    if (!hasKeepalive) out.push('PersistentKeepalive = 25');
+  }
+
+  return `${out.join('\n').trimEnd()}\n\n[http]\nBindAddress = 127.0.0.1:${EGRESS_PORT}\n`;
+}
+
 async function prepareWireproxy() {
   await ensureTemplateAssets();
 
@@ -1040,7 +1110,7 @@ async function prepareWireproxy() {
   if (code !== 0) throw new Error(`wgcf generate exited ${code}`);
 
   const profileText = await fsp.readFile(profile, 'utf8');
-  const config = `${profileText.trimEnd()}\n\n[http]\nBindAddress = 127.0.0.1:${EGRESS_PORT}\n`;
+  const config = buildWireproxyConfig(profileText);
   await fsp.writeFile(cfg, config, { mode: 0o600 });
 
   code = await runCommand(WIREPROXY_PATH, ['-n', '-c', cfg], {
