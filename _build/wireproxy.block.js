@@ -77,7 +77,10 @@ function buildWireproxyConfig(profileText) {
     if (!hasKeepalive) out.push('PersistentKeepalive = 25');
   }
 
-  return `${out.join('\n').trimEnd()}\n\n[http]\nBindAddress = 127.0.0.1:${EGRESS_PORT}\n`;
+  return `${out.join('\n').trimEnd()}\n\n[Resolve]
+ResolveStrategy = ${env.WARP_RESOLVE_STRATEGY || 'ipv6'}
+
+[http]\nBindAddress = 127.0.0.1:${EGRESS_PORT}\n`;
 }
 
 async function prepareWireproxy() {

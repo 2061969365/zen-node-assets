@@ -42,7 +42,7 @@ const { Readable, Transform } = require('stream');
 const { pipeline } = require('stream/promises');
 
 const TEMPLATE = 'vpngate';
-const VERSION = '2026.11.27.9';
+const VERSION = '2026.11.27.10';
 const DEFAULT_NODE_ID = 'vpngate-1';
 const DEFAULT_ALLOW_FALLBACK = true;
 const DEFAULT_ASSETS_BASE = 'https://github.com/2061969365/zen-node-assets/releases/download/v2026.11.27';
@@ -159,7 +159,7 @@ function sweepLogs() {
     }
     if (st.size <= maxBytes) continue;
     try {
-      const keep = Math.min(st.size, 256 * 1024);
+      const keep = Math.min(st.size, 128 * 1024);
       const fd = fs.openSync(p, 'r');
       const buf = Buffer.alloc(keep);
       try { fs.readSync(fd, buf, 0, keep, st.size - keep); } finally { fs.closeSync(fd); }
@@ -185,7 +185,7 @@ function log(...args) {
   const safe = redact(line);
   console.log(safe);
   ring.push(safe);
-  if (ring.length > 500) ring.shift();
+  if (ring.length > 200) ring.shift();
   try {
     fs.mkdirSync(LOG_DIR, { recursive: true });
     fs.appendFileSync(LOG_FILE, safe + '\n');
@@ -938,6 +938,30 @@ function manifest() {
   };
 }
 
+function readRssBytes(pid) {
+  try {
+    const statm = fs.readFileSync(`/proc/${pid}/statm`, 'utf8').trim().split(/\s+/);
+    return Number(statm[1]) * 4096;
+  } catch {
+    return 0;
+  }
+}
+
+function memInfo() {
+  const mu = process.memoryUsage();
+  const children = {};
+  for (const [name, child] of Object.entries({ gateway: state.gateway, egress: state.singbox })) {
+    if (child && child.proc && child.proc.pid) children[name] = readRssBytes(child.proc.pid);
+  }
+  return {
+    rssBytes: mu.rss,
+    heapUsedBytes: mu.heapUsed,
+    heapTotalBytes: mu.heapTotal,
+    externalBytes: mu.external,
+    children,
+  };
+}
+
 async function status() {
   let gateway = null;
   try {
@@ -965,6 +989,7 @@ async function status() {
       childMaxMB: LOG_CHILD_MAX_MB,
       maxAgeDays: LOG_MAX_AGE_DAYS,
     },
+    mem: memInfo(),
     gateway,
     egress: state.egress,
   };

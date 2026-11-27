@@ -45,6 +45,7 @@ No root, no `package.json`, no `npm install`, no Dockerfile.
 | `WARP_ENDPOINT` | no | `162.159.192.1:2408` | outer WireGuard endpoint, kept IPv4 so hosts without IPv6 can connect |
 | `WARP_DNS` | no | `1.1.1.1` | DNS pushed into the tunnel; DoH for `warp`, UDP resolver for `warp-wireproxy` |
 | `WARP_DNS_STRATEGY` | no | `prefer_ipv6` | sing-box resolution strategy for `warp`; `prefer_ipv4` forces IPv4 egress |
+| `WARP_RESOLVE_STRATEGY` | no | `ipv6` | wireproxy `[Resolve]` order; `ipv4` forces IPv4 egress |
 | `VPNGATE_DNS` | no | `1.1.1.1` | DoH server for the vpngate tunnel |
 | `LOG_DIR` | no | `./.zen` | logs and assets |
 | `LOG_MAX_MB` | no | `10` | rotate `node.log` above this size |
@@ -54,8 +55,8 @@ No root, no `package.json`, no `npm install`, no Dockerfile.
 | `LOG_MAX_AGE_DAYS` | no | `7` | delete logs older than N days; `0` disables |
 | `SINGBOX_GOMEMLIMIT` | no | `64MiB` | Go heap cap for sing-box (vpngate/warp) |
 | `SINGBOX_GOGC` | no | `50` | sing-box GC percent |
-| `WIREPROXY_GOMEMLIMIT` | no | `32MiB` | Go heap cap for wireproxy |
-| `WIREPROXY_GOGC` | no | `50` | wireproxy GC percent |
+| `WIREPROXY_GOMEMLIMIT` | no | `24MiB` | Go heap cap for wireproxy |
+| `WIREPROXY_GOGC` | no | `40` | wireproxy GC percent |
 
 vpngate additionally needs `python3` and `curl` on the host. warp and warp-wireproxy need no Python.
 
@@ -74,6 +75,8 @@ Measured on GitHub Actions `ubuntu-latest` (Node 20, amd64) from `/proc/<pid>/sm
 | `warp-wireproxy` | 98.9 | 13.0 | 15.2 | 127.1 | 132.8 | 136.9 |
 
 `warp-wireproxy` replaces the ~61 MB sing-box process with a ~13 MB wireproxy process, saving roughly 37 MiB PSS versus `warp` and 54 MiB versus `vpngate`. Node RSS is dominated by V8; `SINGBOX_GOMEMLIMIT` / `WIREPROXY_GOMEMLIMIT` cap the Go side.
+
+The memory table was measured with the older `32MiB` / `GOGC 50` wireproxy defaults. Current defaults are `24MiB` / `GOGC 40`. `/status.mem` reports Node RSS/heap and child RSS, so you can check the live numbers. The remaining large consumer is the Node process itself; if the panel allows environment variables, `NODE_OPTIONS=--max-old-space-size=96 --max-semi-space-size=2` trims V8 headroom (it cannot be applied reliably from inside `index.js`).
 
 Runs: `vpngate` and `warp-wireproxy` from [memory 45942525430](https://github.com/2061969365/zen-node-assets/actions/runs/45942525430); `warp` from [memory 45940799384](https://github.com/2061969365/zen-node-assets/actions/runs/45940799384) (WARP tunnel stayed up; on some runners UDP 2408 is blocked and the node falls back to direct).
 
