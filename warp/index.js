@@ -42,7 +42,7 @@ const { Readable, Transform } = require('stream');
 const { pipeline } = require('stream/promises');
 
 const TEMPLATE = 'warp';
-const VERSION = '2026.11.27.4';
+const VERSION = '2026.11.27.5';
 const DEFAULT_NODE_ID = 'warp-1';
 const DEFAULT_ALLOW_FALLBACK = false;
 const DEFAULT_ASSETS_BASE = 'https://github.com/2061969365/zen-node-assets/releases/download/v2026.11.27';
@@ -70,6 +70,10 @@ const EGRESS_MODE = String(env.EGRESS_MODE || 'auto').toLowerCase() === 'direct'
 let ALLOW_DIRECT_FALLBACK = env.ALLOW_DIRECT_FALLBACK == null ? DEFAULT_ALLOW_FALLBACK : env.ALLOW_DIRECT_FALLBACK !== '0';
 let MAX_RUN_SEC = Number(env.MAX_RUN_SEC || 0);
 let PROBE_INTERVAL_SEC = Math.max(30, Number(env.PROBE_INTERVAL_SEC || 300));
+// Automatic rotate policy. ROTATE_429_THRESHOLD=0 disables 429 rotation.
+let ROTATE_429_THRESHOLD = Math.max(0, Number(env.ROTATE_429_THRESHOLD == null ? 1 : env.ROTATE_429_THRESHOLD));
+let ROTATE_EGRESS_FAILS = Math.max(1, Number(env.ROTATE_EGRESS_FAILS || 3));
+let ROTATE_INTERVAL_SEC = Math.max(0, Number(env.ROTATE_INTERVAL_SEC || 0));
 const LOG_DIR = path.resolve(env.LOG_DIR || '.zen');
 const ASSET_DIR = path.join(LOG_DIR, 'assets');
 const SCRIPT_DIR = path.join(LOG_DIR, 'scripts');
@@ -463,6 +467,8 @@ const state = {
   runId: '',
   egressIp: '',
   up429: 0,
+  up429Base: 0,
+  lastRotateAt: 0,
   rotateInFlight: false,
   lastBootstrapAt: 0,
   lastEgressCheck: 0,
@@ -618,6 +624,8 @@ async function startAll() {
     state.runId = health.run_id || '';
     state.egressIp = health.egress_ip || state.egress.ip || '';
     state.up429 = Number((health.stats && health.stats.up429) || 0);
+    state.up429Base = state.up429;
+    state.lastRotateAt = Date.now();
     state.phase = 'running';
     log(`running template=${TEMPLATE} node=${NODE_ID} egress=${useProxy ? state.egress.ip : 'direct'} run=${state.runId}`);
   } catch (e) {
@@ -658,13 +666,13 @@ async function restartGatewayOnly() {
   }
 }
 
-async function rotate() {
+async function rotate(reason = 'manual') {
   if (state.rotateInFlight) return;
   state.rotateInFlight = true;
   try {
-    log('rotate start');
+    log(`rotate start reason=${reason}`);
     if (EGRESS_MODE === 'auto') {
-      await rotateEgress();
+      await rotateEgress(reason);
       if (!(await verifyEgress(60000))) throw new Error('egress check after rotate failed');
     }
     if (state.gateway) await state.gateway.stop();
@@ -675,7 +683,9 @@ async function rotate() {
     state.runId = health.run_id || state.runId;
     state.egressIp = health.egress_ip || state.egress.ip || '';
     state.up429 = Number((health.stats && health.stats.up429) || 0);
-    log(`rotate done egress=${state.egress.ip || state.egressIp}`);
+    state.up429Base = state.up429;
+    state.lastRotateAt = Date.now();
+    log(`rotate done reason=${reason} egress=${state.egress.ip || state.egressIp}`);
   } catch (e) {
     state.lastError = e.message;
     log('rotate failed:', e.message);
@@ -713,12 +723,10 @@ function startWatchdog() {
       state.runId = h.json.run_id || state.runId;
       state.egressIp = h.json.egress_ip || state.egressIp;
       const up429 = Number((h.json.stats && h.json.stats.up429) || 0);
-      if (up429 > state.up429) {
-        state.up429 = up429;
-        log(`watchdog: up429 increased to ${up429}, rotating`);
-        await rotate();
-      } else {
-        state.up429 = up429;
+      state.up429 = up429;
+      if (ROTATE_429_THRESHOLD > 0 && up429 - state.up429Base >= ROTATE_429_THRESHOLD) {
+        log(`watchdog: up429 ${state.up429Base} -> ${up429} (threshold ${ROTATE_429_THRESHOLD}), rotating`);
+        await rotate('429');
       }
     }
 
@@ -726,19 +734,24 @@ function startWatchdog() {
       const ok = await verifyEgress();
       if (!ok) {
         egressFails++;
-        log(`watchdog: egress fail ${egressFails}/3`);
-        if (egressFails >= 3) {
+        log(`watchdog: egress fail ${egressFails}/${ROTATE_EGRESS_FAILS}`);
+        if (egressFails >= ROTATE_EGRESS_FAILS) {
           egressFails = 0;
-          await rotate();
+          await rotate('egress');
         }
       } else {
         egressFails = 0;
       }
     }
 
+    if (ROTATE_INTERVAL_SEC > 0 && state.lastRotateAt && Date.now() - state.lastRotateAt >= ROTATE_INTERVAL_SEC * 1000) {
+      log(`watchdog: rotate interval ${ROTATE_INTERVAL_SEC}s reached, rotating`);
+      await rotate('interval');
+    }
+
     if (MAX_RUN_SEC > 0 && state.startedAtGateway && Date.now() - state.startedAtGateway > MAX_RUN_SEC * 1000) {
       log('watchdog: max run reached, rotating');
-      await rotate();
+      await rotate('maxrun');
     }
   }, 15000);
 }
@@ -809,6 +822,12 @@ async function status() {
     templateType: TEMPLATE,
     version: VERSION,
     lastError: state.lastError,
+    rotate: {
+      on429Threshold: ROTATE_429_THRESHOLD,
+      egressFails: ROTATE_EGRESS_FAILS,
+      intervalSec: ROTATE_INTERVAL_SEC,
+      lastAt: state.lastRotateAt ? new Date(state.lastRotateAt).toISOString() : '',
+    },
     gateway,
     egress: state.egress,
   };
@@ -844,7 +863,7 @@ async function handleControl(req, res, u) {
       return json(res, 202, { ok: true });
     }
     if (req.method === 'POST' && p === '/rotate') {
-      rotate().catch((e) => log('rotate error:', e.message));
+      rotate('manual').catch((e) => log('rotate error:', e.message));
       return json(res, 202, { ok: true });
     }
     if (req.method === 'POST' && p === '/update') return handleUpdate(req, res);
@@ -854,8 +873,19 @@ async function handleControl(req, res, u) {
       if (!body || typeof body !== 'object') return json(res, 400, { error: 'bad json' });
       if (body.MAX_RUN_SEC != null) MAX_RUN_SEC = Number(body.MAX_RUN_SEC) || 0;
       if (body.PROBE_INTERVAL_SEC != null) PROBE_INTERVAL_SEC = Math.max(30, Number(body.PROBE_INTERVAL_SEC) || 300);
+      if (body.ROTATE_429_THRESHOLD != null) ROTATE_429_THRESHOLD = Math.max(0, Number(body.ROTATE_429_THRESHOLD) || 0);
+      if (body.ROTATE_EGRESS_FAILS != null) ROTATE_EGRESS_FAILS = Math.max(1, Number(body.ROTATE_EGRESS_FAILS) || 3);
+      if (body.ROTATE_INTERVAL_SEC != null) ROTATE_INTERVAL_SEC = Math.max(0, Number(body.ROTATE_INTERVAL_SEC) || 0);
       if (body.ALLOW_DIRECT_FALLBACK != null) ALLOW_DIRECT_FALLBACK = !!body.ALLOW_DIRECT_FALLBACK;
-      return json(res, 202, { ok: true, maxRunSec: MAX_RUN_SEC, probeIntervalSec: PROBE_INTERVAL_SEC, allowDirectFallback: ALLOW_DIRECT_FALLBACK });
+      return json(res, 202, {
+        ok: true,
+        maxRunSec: MAX_RUN_SEC,
+        probeIntervalSec: PROBE_INTERVAL_SEC,
+        rotate429Threshold: ROTATE_429_THRESHOLD,
+        rotateEgressFails: ROTATE_EGRESS_FAILS,
+        rotateIntervalSec: ROTATE_INTERVAL_SEC,
+        allowDirectFallback: ALLOW_DIRECT_FALLBACK,
+      });
     }
     json(res, 404, { error: 'not found' });
   } catch (e) {

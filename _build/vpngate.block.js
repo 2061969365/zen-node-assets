@@ -12,6 +12,11 @@ const VPNGATE_KEEP_NODES = Math.max(1, Number(env.VPNGATE_KEEP_NODES || 3));
 
 let vpngatePreflightDone = false;
 let vpngateIdx = 0;
+let vpngateBurned = new Set();
+
+function vpngateKey(node) {
+  return `${node.server}:${node.server_port}`;
+}
 
 function loadVpngateIdx() {
   for (const p of [path.join(LOG_DIR, 'vpngate.idx'), '/tmp/vpngate_current_idx.txt']) {
@@ -77,7 +82,9 @@ async function runVpngateSelect() {
   });
   if (code !== 0) throw new Error(`vpngate select exited ${code}`);
   if (!fs.existsSync(outPath)) throw new Error('vpngate select produced no sb.json');
-  vpngateIdx = loadVpngateIdx();
+  vpngateBurned.clear();
+  vpngateIdx = 0;
+  saveVpngateIdx();
   log(`VPNGate nodes selected, idx=${vpngateIdx}`);
 }
 
@@ -89,7 +96,7 @@ async function bootstrapEgress() {
   if (!(await verifyEgress(60000))) throw new Error('egress check failed');
 }
 
-async function rotateVpngate() {
+async function rotateVpngate(reason) {
   const verifiedPath = '/tmp/verified_nodes.json';
   if (!fs.existsSync(verifiedPath)) return false;
   let nodes;
@@ -100,7 +107,26 @@ async function rotateVpngate() {
   }
   if (!Array.isArray(nodes) || nodes.length === 0) return false;
 
-  vpngateIdx = (vpngateIdx + 1) % nodes.length;
+  if (reason === '429' || reason === 'egress') {
+    const cur = nodes[vpngateIdx % nodes.length];
+    if (cur) vpngateBurned.add(vpngateKey(cur));
+  }
+
+  let next = -1;
+  for (let step = 1; step <= nodes.length; step++) {
+    const idx = (vpngateIdx + step) % nodes.length;
+    if (!vpngateBurned.has(vpngateKey(nodes[idx]))) {
+      next = idx;
+      break;
+    }
+  }
+  if (next < 0) {
+    log(`VPNGate all ${nodes.length} verified nodes burned, re-selecting`);
+    vpngateBurned.clear();
+    return false;
+  }
+
+  vpngateIdx = next;
   saveVpngateIdx();
   const node = nodes[vpngateIdx];
   const endpoint = { ...node.endpoint, tag: 'vpngate-active' };
@@ -119,14 +145,16 @@ async function rotateVpngate() {
   await sleep(2000);
   await startSingbox();
   const ok = await waitTcp(EGRESS_PORT, 30000);
-  log(`VPNGate switched to #${vpngateIdx} ${node.server}:${node.server_port} ok=${ok}`);
+  log(`VPNGate switched to #${vpngateIdx} ${vpngateKey(node)} reason=${reason || 'manual'} ok=${ok}`);
   return ok;
 }
 
-async function rotateEgress() {
-  const ok = await rotateVpngate();
+async function rotateEgress(reason) {
+  const ok = await rotateVpngate(reason);
   if (ok) return;
-  log('VPNGate rotate had no verified node, re-selecting');
+  log(`VPNGate pool exhausted (reason=${reason || 'manual'}), re-selecting fresh nodes`);
+  vpngateBurned.clear();
+  vpngateIdx = 0;
   await runVpngateSelect();
   await startSingbox();
   if (!(await waitTcp(EGRESS_PORT, 30000))) throw new Error('sing-box did not listen after reselect');

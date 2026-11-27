@@ -35,6 +35,9 @@ No root, no `package.json`, no `npm install`, no Dockerfile.
 | `EGRESS_PORT` | no | `18080` | loopback port for the egress proxy (sing-box / wireproxy) |
 | `MAX_RUN_SEC` | no | `0` | rotate after N seconds; 0 disables |
 | `PROBE_INTERVAL_SEC` | no | `300` | egress self-check interval |
+| `ROTATE_429_THRESHOLD` | no | `1` | rotate after N new upstream 429s; `0` disables |
+| `ROTATE_EGRESS_FAILS` | no | `3` | rotate after N consecutive egress failures |
+| `ROTATE_INTERVAL_SEC` | no | `0` | periodic rotate interval; 0 disables |
 | `LOG_DIR` | no | `./.zen` | logs and assets |
 | `SINGBOX_GOMEMLIMIT` | no | `64MiB` | Go heap cap for sing-box (vpngate/warp) |
 | `SINGBOX_GOGC` | no | `50` | sing-box GC percent |
@@ -114,6 +117,22 @@ curl -fsS -X POST \
 `restart:false` stages the file without restarting. `POST /_zen/node/v1/rollback` restores `index.js.bak`.
 
 Console integration plan: [docs/console-native-template-push.md](docs/console-native-template-push.md).
+
+## Auto rotate
+
+The node polls `/health` every 15 s. A rotate is triggered by:
+
+- upstream `stats.up429` growing by `ROTATE_429_THRESHOLD` (default 1)
+- `ROTATE_EGRESS_FAILS` consecutive egress failures (checked every `PROBE_INTERVAL_SEC`)
+- `MAX_RUN_SEC` reached
+- `ROTATE_INTERVAL_SEC` reached (default off)
+
+Per template:
+
+- `vpngate` — switches to the next verified node; marks the current node burned on 429/egress failure. When every verified node is burned, it re-runs selection and fetches a fresh batch.
+- `warp` / `warp-wireproxy` — deletes the wgcf account/profile, re-registers, and rebuilds the tunnel, giving a new WARP identity/IP.
+
+After a successful rotate the gateway restarts and the `up429` baseline resets. `POST /_zen/node/v1/apply` also accepts `ROTATE_429_THRESHOLD`, `ROTATE_EGRESS_FAILS`, `ROTATE_INTERVAL_SEC` at runtime.
 
 ## Assets
 
