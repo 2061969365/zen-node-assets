@@ -36,6 +36,8 @@ const fsp = fs.promises;
 const path = require('path');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
+const { Readable, Transform } = require('stream');
+const { pipeline } = require('stream/promises');
 
 const TEMPLATE = 'vpngate';
 const VERSION = '2026.11.27.1';
@@ -175,13 +177,63 @@ async function loadChecksums() {
   return checksums;
 }
 
+function sha256File(file) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const stream = fs.createReadStream(file);
+    stream.on('data', (c) => hash.update(c));
+    stream.on('end', () => resolve(hash.digest('hex')));
+    stream.on('error', reject);
+  });
+}
+
+async function downloadToFile(url, dest, want, executable) {
+  const res = await fetch(url, {
+    redirect: 'follow',
+    signal: AbortSignal.timeout(600000),
+    headers: { 'user-agent': `zen-node/${VERSION}` },
+  });
+  if (!res.ok || !res.body) throw new Error(`GET ${url} -> ${res.status}`);
+  const tmp = `${dest}.part-${process.pid}-${Date.now()}`;
+  const hash = crypto.createHash('sha256');
+  const hasher = new Transform({
+    transform(chunk, _enc, cb) {
+      hash.update(chunk);
+      cb(null, chunk);
+    },
+  });
+  try {
+    await pipeline(
+      Readable.fromWeb(res.body),
+      hasher,
+      fs.createWriteStream(tmp, { mode: executable ? 0o755 : 0o644 }),
+    );
+    const got = hash.digest('hex');
+    if (want && got !== want) {
+      throw new Error(`checksum mismatch for ${path.basename(dest)}: got ${got} want ${want}`);
+    }
+    await fsp.rename(tmp, dest);
+    if (executable) fs.chmodSync(dest, 0o755);
+    return { bytes: fs.statSync(dest).size, sha: got };
+  } catch (e) {
+    try { await fsp.rm(tmp, { force: true }); } catch {}
+    throw e;
+  }
+}
+
 async function ensureAsset(name, url, executable, dir = ASSET_DIR) {
   const dest = path.join(dir, name);
   const sums = await loadChecksums();
   const want = sums[name];
   if (fs.existsSync(dest)) {
-    const buf = await fsp.readFile(dest);
-    if (!want || sha256(buf) === want) {
+    if (!want) {
+      if (executable) {
+        try { fs.chmodSync(dest, 0o755); } catch {}
+      }
+      return dest;
+    }
+    const got = await sha256File(dest);
+    if (got === want) {
       if (executable) {
         try { fs.chmodSync(dest, 0o755); } catch {}
       }
@@ -191,12 +243,8 @@ async function ensureAsset(name, url, executable, dir = ASSET_DIR) {
   }
   fs.mkdirSync(dir, { recursive: true });
   log(`downloading ${url}`);
-  const buf = await fetchBuffer(url);
-  const got = sha256(buf);
-  if (want && got !== want) throw new Error(`checksum mismatch for ${name}: got ${got} want ${want}`);
-  await fsp.writeFile(dest, buf, { mode: executable ? 0o755 : 0o644 });
-  if (executable) fs.chmodSync(dest, 0o755);
-  log(`asset ${name} ready (${buf.length} bytes)`);
+  const { bytes, sha } = await downloadToFile(url, dest, want, executable);
+  log(`asset ${name} ready (${bytes} bytes sha=${sha.slice(0, 12)})`);
   return dest;
 }
 
@@ -429,7 +477,13 @@ async function startSingbox() {
   state.singbox = new Child('sing-box', SINGBOX_PATH, ['run', '-c', cfg], {
     logFile: path.join(LOG_DIR, 'sing-box.log'),
     cwd: LOG_DIR,
-    env: { ...process.env, NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost' },
+    env: {
+      ...process.env,
+      NO_PROXY: '127.0.0.1,localhost',
+      no_proxy: '127.0.0.1,localhost',
+      GOMEMLIMIT: env.SINGBOX_GOMEMLIMIT || '64MiB',
+      GOGC: env.SINGBOX_GOGC || '50',
+    },
   });
   state.singbox.start();
 }
