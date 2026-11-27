@@ -39,8 +39,8 @@ No root, no `package.json`, no `npm install`, no Dockerfile.
 | `ROTATE_EGRESS_FAILS` | no | `3` | rotate after N consecutive egress failures |
 | `ROTATE_INTERVAL_SEC` | no | `0` | periodic rotate interval; 0 disables |
 | `ROTATE_429_GRACE_SEC` | no | `90` | ignore upstream 429s during the first N seconds after gateway start |
-| `BOOT_PROBE_TRIES` | no | `4` | `/v1/chat/completions` probes before reporting running; `0` disables |
-| `BOOT_PROBE_TIMEOUT_SEC` | no | `90` | per boot-probe timeout |
+| `BOOT_PROBE_TRIES` | no | `12` (`warp-wireproxy`), `8` (`warp`/`vpngate`) | `/v1/chat/completions` probes before reporting running; each 429 rotates the egress; `0` disables |
+| `BOOT_PROBE_TIMEOUT_SEC` | no | `60` | per boot-probe timeout |
 | `PROBE_MODEL` | no | `deepseek-v4.1-flash-free` | model used for the boot probe |
 | `WARP_ENDPOINT` | no | `162.159.192.1:2408` | outer WireGuard endpoint, kept IPv4 so hosts without IPv6 can connect |
 | `WARP_DNS` | no | `1.1.1.1` | DNS pushed into the tunnel; DoH for `warp`, UDP resolver for `warp-wireproxy` |
@@ -77,6 +77,26 @@ Measured on GitHub Actions `ubuntu-latest` (Node 20, amd64) from `/proc/<pid>/sm
 `warp-wireproxy` replaces the ~61 MB sing-box process with a ~13 MB wireproxy process, saving roughly 37 MiB PSS versus `warp` and 54 MiB versus `vpngate`. Node RSS is dominated by V8; `SINGBOX_GOMEMLIMIT` / `WIREPROXY_GOMEMLIMIT` cap the Go side.
 
 The memory table was measured with the older `32MiB` / `GOGC 50` wireproxy defaults. Current defaults are `24MiB` / `GOGC 40`. `/status.mem` reports Node RSS/heap and child RSS, so you can check the live numbers. The remaining large consumer is the Node process itself; if the panel allows environment variables, `NODE_OPTIONS=--max-old-space-size=96 --max-semi-space-size=2` trims V8 headroom (it cannot be applied reliably from inside `index.js`).
+
+### Live numbers (Bot-Hosting, Node v24.22.2, `warp-wireproxy`)
+
+`2026.11.27.10` → `2026.11.27.11` removed the global `fetch` (undici) from the asset download path, switched to `http`/`https` with manual redirect handling, and capped the global agent at 4 idle sockets:
+
+| | `.10` | `.11` |
+|---|---:|---:|
+| Node RSS | 108.4 MiB | 90.9 MiB |
+| gateway RSS | 18.2 | 17.7 |
+| wireproxy RSS | 13.6 | 13.2 |
+| **total RSS** | **141.3** | **121.8** |
+
+`/status.mem.proc` now reports `smaps_rollup`. On `.11` the Node process was `Pss 40.1 MiB`, of which `Shared_Clean 54.0 MiB` is the file-backed `node` binary and libraries (reclaimable page cache) and `Private_Dirty 39.8 MiB` is the real anonymous footprint; `CodeSpace` was only 1 MiB, so JIT is not the cost. In other words the honest private total is about 71 MiB (40 + 18 + 13), while RSS adds ~54 MiB of shared pages.
+
+Because `PORT` is handed to `node index.js` by the panel, V8 flags cannot be injected from inside the script; the Node runtime baseline is the floor for this design.
+
+## Boot 429s
+
+`opencode.ai` does have AAAA records, but WARP still reaches it over the shared Cloudflare IPv4 NAT pool, where the upstream free-usage counter is usually exhausted (`FreeUsageLimitError`). Every `rotate` re-registers wgcf, which yields a new WARP identity, a new `/128`, and usually a new NAT IPv4, so a 429 at boot is a lottery over the pool. `.12` raises `BOOT_PROBE_TRIES` to 12 for `warp-wireproxy` (8 for `warp`/`vpngate`) and keeps rotating until a probe returns 200; on the test host roughly one in four sampled IPs was usable, so four tries failed while a dozen almost always finds one. `/status.egress.ip6` shows whether the tunnel actually carries IPv6 (probed against AAAA-only echo hosts).
+
 
 Runs: `vpngate` and `warp-wireproxy` from [memory 45942525430](https://github.com/2061969365/zen-node-assets/actions/runs/45942525430); `warp` from [memory 45940799384](https://github.com/2061969365/zen-node-assets/actions/runs/45940799384) (WARP tunnel stayed up; on some runners UDP 2408 is blocked and the node falls back to direct).
 

@@ -1,0 +1,57 @@
+name: mem-compare
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ASSETS_BASE_URL: https://github.com/2061969365/zen-node-assets/releases/download/v2026.11.27
+
+jobs:
+  compare:
+    name: warp-vs-warp-wireproxy
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: runner ip
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/mem
+          curl -fsS --max-time 20 https://api.ipify.org | tee /tmp/mem/runner_ip.txt
+          echo
+
+      - name: measure warp
+        continue-on-error: true
+        run: bash scripts/measure_one.sh warp 18080
+
+      - name: measure warp-wireproxy
+        continue-on-error: true
+        run: bash scripts/measure_one.sh warp-wireproxy 19080
+
+      - name: table
+        if: always()
+        env:
+          NODE_VERSION: ${{ steps.node.outputs.node-version }}
+        run: python3 scripts/mem_table.py
+
+      - name: upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mem-compare
+          include-hidden-files: true
+          path: |
+            /tmp/mem/*
+            .zen-mem-*/*.log
+            .zen-mem-*/*.json
+            .zen-mem-*/*.txt
+          if-no-files-found: ignore

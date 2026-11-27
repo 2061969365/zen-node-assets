@@ -95,15 +95,7 @@ async function readUpdatePayload(body) {
     if (u.protocol !== 'https:' && !(u.protocol === 'http:' && local)) {
       throw new Error('update url must be https');
     }
-    const r = await fetch(u.toString(), {
-      redirect: 'follow',
-      signal: AbortSignal.timeout(15000),
-      headers: { 'user-agent': `zen-node/${VERSION}` },
-    });
-    if (!r.ok) throw new Error(`download status ${r.status}`);
-    const len = Number(r.headers.get('content-length') || 0);
-    if (len > UPDATE_MAX_BYTES) throw new Error('update too large');
-    buf = Buffer.from(await r.arrayBuffer());
+    buf = await fetchBuffer(u.toString(), 15000);
   } else {
     throw new Error('content or url required');
   }

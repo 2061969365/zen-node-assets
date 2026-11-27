@@ -5,7 +5,7 @@
  * zen-node single-file deployment (generated)
  *
  * Template: warp-wireproxy
- * Version:  2026.11.27.1
+ * Version:  2026.11.27.14
  *
  * Deploy:
  *   1) Put this file on the host as index.js
@@ -39,11 +39,17 @@ const path = require('path');
 const crypto = require('crypto');
 const tls = require('tls');
 const { spawn } = require('child_process');
-const { Readable, Transform } = require('stream');
+const { Transform } = require('stream');
 const { pipeline } = require('stream/promises');
 
+// Keep idle socket buffers bounded; the default agent keeps up to 256 free
+// sockets alive, which shows up as RSS on long-running small hosts.
+http.globalAgent.maxSockets = 32;
+http.globalAgent.maxFreeSockets = 4;
+http.globalAgent.keepAliveMsecs = 1000;
+
 const TEMPLATE = 'warp-wireproxy';
-const VERSION = '2026.11.27.10';
+const VERSION = '2026.11.27.14';
 const DEFAULT_NODE_ID = 'warp-wireproxy-1';
 const DEFAULT_ALLOW_FALLBACK = false;
 const DEFAULT_ASSETS_BASE = 'https://github.com/2061969365/zen-node-assets/releases/download/v2026.11.27';
@@ -72,8 +78,8 @@ let ALLOW_DIRECT_FALLBACK = env.ALLOW_DIRECT_FALLBACK == null ? DEFAULT_ALLOW_FA
 let MAX_RUN_SEC = Number(env.MAX_RUN_SEC || 0);
 let PROBE_INTERVAL_SEC = Math.max(30, Number(env.PROBE_INTERVAL_SEC || 300));
 const ROTATE_429_GRACE_SEC = Math.max(0, Number(env.ROTATE_429_GRACE_SEC == null ? 90 : env.ROTATE_429_GRACE_SEC));
-const BOOT_PROBE_TRIES = Math.max(0, Number(env.BOOT_PROBE_TRIES == null ? 4 : env.BOOT_PROBE_TRIES));
-const BOOT_PROBE_TIMEOUT_SEC = Math.max(10, Number(env.BOOT_PROBE_TIMEOUT_SEC || 90));
+const BOOT_PROBE_TRIES = Math.max(0, Number(env.BOOT_PROBE_TRIES == null ? 12 : env.BOOT_PROBE_TRIES));
+const BOOT_PROBE_TIMEOUT_SEC = Math.max(10, Number(env.BOOT_PROBE_TIMEOUT_SEC || 60));
 const PROBE_MODEL = String(env.PROBE_MODEL || 'deepseek-v4.1-flash-free');
 // Automatic rotate policy. ROTATE_429_THRESHOLD=0 disables 429 rotation.
 let ROTATE_429_THRESHOLD = Math.max(0, Number(env.ROTATE_429_THRESHOLD == null ? 1 : env.ROTATE_429_THRESHOLD));
@@ -204,14 +210,52 @@ function sha256(buf) {
   return crypto.createHash('sha256').update(buf).digest('hex');
 }
 
-async function fetchBuffer(url, timeoutMs = 180000) {
-  const res = await fetch(url, {
-    redirect: 'follow',
-    signal: AbortSignal.timeout(timeoutMs),
-    headers: { 'user-agent': `zen-node/${VERSION}` },
+// Use the core http/https modules instead of the global fetch (undici).
+// undici costs ~5MB RSS and is only needed for a handful of asset downloads.
+function openDownload(url, timeoutMs, redirects = 5) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const mod = u.protocol === 'https:' ? require('https') : http;
+    const req = mod.request({
+      protocol: u.protocol,
+      hostname: u.hostname,
+      port: u.port || (u.protocol === 'https:' ? 443 : 80),
+      path: u.pathname + u.search,
+      method: 'GET',
+      headers: { 'user-agent': `zen-node/${VERSION}`, 'accept-encoding': 'identity' },
+      timeout: timeoutMs,
+    }, (res) => {
+      const code = res.statusCode || 0;
+      if (code >= 300 && code < 400 && res.headers.location && redirects > 0) {
+        res.resume();
+        let next;
+        try { next = new URL(res.headers.location, url).toString(); } catch { reject(new Error(`bad redirect from ${url}`)); return; }
+        resolve(openDownload(next, timeoutMs, redirects - 1));
+        return;
+      }
+      if (code < 200 || code >= 300) {
+        res.resume();
+        reject(new Error(`GET ${url} -> ${code}`));
+        return;
+      }
+      resolve(res);
+    });
+    req.on('timeout', () => req.destroy(new Error(`GET ${url} timeout`)));
+    req.on('error', reject);
+    req.end();
   });
-  if (!res.ok) throw new Error(`GET ${url} -> ${res.status}`);
-  return Buffer.from(await res.arrayBuffer());
+}
+
+async function fetchBuffer(url, timeoutMs = 180000) {
+  const res = await openDownload(url, timeoutMs);
+  const chunks = [];
+  try {
+    for await (const chunk of res) chunks.push(chunk);
+  } catch (e) {
+    res.destroy();
+    throw e;
+  }
+  return Buffer.concat(chunks);
 }
 
 async function fetchText(url, timeoutMs = 30000) {
@@ -248,12 +292,7 @@ function sha256File(file) {
 }
 
 async function downloadToFile(url, dest, want, executable) {
-  const res = await fetch(url, {
-    redirect: 'follow',
-    signal: AbortSignal.timeout(600000),
-    headers: { 'user-agent': `zen-node/${VERSION}` },
-  });
-  if (!res.ok || !res.body) throw new Error(`GET ${url} -> ${res.status}`);
+  const res = await openDownload(url, 600000);
   const tmp = `${dest}.part-${process.pid}-${Date.now()}`;
   const hash = crypto.createHash('sha256');
   const hasher = new Transform({
@@ -264,7 +303,7 @@ async function downloadToFile(url, dest, want, executable) {
   });
   try {
     await pipeline(
-      Readable.fromWeb(res.body),
+      res,
       hasher,
       fs.createWriteStream(tmp, { mode: executable ? 0o755 : 0o644 }),
     );
@@ -644,6 +683,31 @@ const EGRESS_CHECK_URLS = [
   { host: 'ipinfo.io', path: '/ip' },
 ];
 
+// AAAA-only hosts: a 200 with an IPv6 body proves the tunnel really carries
+// IPv6, which is what gives WARP a per-account egress address instead of the
+// shared IPv4 NAT pool that trips the upstream free-usage limit.
+const EGRESS_IPV6_URLS = [
+  { host: 'ipv6.icanhazip.com', path: '/' },
+  { host: 'api6.ipify.org', path: '/' },
+];
+
+let lastIpv6Probe = 0;
+
+async function probeIpv6() {
+  for (const u of EGRESS_IPV6_URLS) {
+    try {
+      const r = await httpsViaProxy(EGRESS_PORT, u.host, u.path, 6000);
+      const ip = String(r.body || '').trim().split(/\s+/)[0];
+      if (r.status === 200 && /^[0-9a-f:]+$/i.test(ip) && ip.includes(':')) {
+        state.egress.ip6 = ip;
+        return ip;
+      }
+    } catch {}
+  }
+  state.egress.ip6 = '';
+  return '';
+}
+
 async function verifyEgress(timeoutMs = 30000) {
   const deadline = Date.now() + timeoutMs;
   let last = 'no attempt';
@@ -657,6 +721,10 @@ async function verifyEgress(timeoutMs = 30000) {
           state.egress.state = 'running';
           state.egress.lastCheck = new Date().toISOString();
           state.lastEgressCheck = Date.now();
+          if (Date.now() - lastIpv6Probe > 600000) {
+            lastIpv6Probe = Date.now();
+            probeIpv6().catch(() => {});
+          }
           return true;
         }
         last = `${u.host} status=${r.status} body=${String(r.body || '').slice(0, 40)}`;
@@ -769,7 +837,7 @@ async function startAll() {
           log(`boot probe #${attempt}/${BOOT_PROBE_TRIES} -> 200`);
           break;
         }
-        log(`boot probe #${attempt}/${BOOT_PROBE_TRIES} -> ${code} ${r ? r.body.slice(0, 160) : ''}`);
+        log(`boot probe #${attempt}/${BOOT_PROBE_TRIES} -> ${code} ${r ? r.body.slice(0, 400) : ''}`);
         if (attempt >= BOOT_PROBE_TRIES) break;
         try {
           await rotateEgress('429');
@@ -986,6 +1054,30 @@ function readRssBytes(pid) {
   }
 }
 
+function procSelfInfo() {
+  const out = {};
+  try {
+    const s = fs.readFileSync('/proc/self/status', 'utf8');
+    for (const line of s.split('\n')) {
+      const m = line.match(/^(VmRSS|VmHWM|VmSize|RssAnon|RssFile|RssShmem|Threads):\s+(\d+)(?:\s+kB)?/);
+      if (m) out[m[1]] = Number(m[2]) * (m[1] === 'Threads' ? 1 : 1024);
+    }
+  } catch {}
+  try {
+    const s = fs.readFileSync('/proc/self/smaps_rollup', 'utf8');
+    for (const line of s.split('\n')) {
+      const m = line.match(/^(Rss|Pss|Shared_Clean|Shared_Dirty|Private_Clean|Private_Dirty|Anonymous|Swap):\s+(\d+)\s+kB/);
+      if (m) out[m[1]] = Number(m[2]) * 1024;
+    }
+  } catch {}
+  try {
+    for (const sp of require('v8').getHeapSpaceStatistics()) {
+      if (sp.space_name === 'code_space') out.CodeSpace = sp.space_size;
+    }
+  } catch {}
+  return out;
+}
+
 function memInfo() {
   const mu = process.memoryUsage();
   const children = {};
@@ -997,6 +1089,8 @@ function memInfo() {
     heapUsedBytes: mu.heapUsed,
     heapTotalBytes: mu.heapTotal,
     externalBytes: mu.external,
+    node: process.version,
+    proc: procSelfInfo(),
     children,
   };
 }
@@ -1307,15 +1401,7 @@ async function readUpdatePayload(body) {
     if (u.protocol !== 'https:' && !(u.protocol === 'http:' && local)) {
       throw new Error('update url must be https');
     }
-    const r = await fetch(u.toString(), {
-      redirect: 'follow',
-      signal: AbortSignal.timeout(15000),
-      headers: { 'user-agent': `zen-node/${VERSION}` },
-    });
-    if (!r.ok) throw new Error(`download status ${r.status}`);
-    const len = Number(r.headers.get('content-length') || 0);
-    if (len > UPDATE_MAX_BYTES) throw new Error('update too large');
-    buf = Buffer.from(await r.arrayBuffer());
+    buf = await fetchBuffer(u.toString(), 15000);
   } else {
     throw new Error('content or url required');
   }

@@ -32,6 +32,11 @@ rotate done reason=429 egress=104.28.222.16
 - `warp` 默认 `prefer_ipv6`，优先走 WARP IPv6 出口；`warp-wireproxy` 显式
   `ResolveStrategy=ipv6`。
 - 注意：`/health` 的 `egress_ip` 是 IPv4 echo 的结果，不代表 chat 实际走 v4。
+- `BOOT_PROBE_TRIES` 默认提到 12（`warp-wireproxy`）/ 8（`warp`、`vpngate`）：
+  每次 429 都重新注册 wgcf，换 WARP 身份、`/128` 和 NAT IPv4。
+  实测干净 IP 约 1/4 概率，4 次全 429、12 次基本必中。
+- `.12` 起 `/status.egress.ip6` 用 AAAA-only 回显站探测隧道是否真的承载 IPv6，
+  用来区分"v6 没通"和"v6 通了但上游仍按 v4 计数"。
 
 **结论**：429 不是隧道故障，是上游对共享 WARP IP 的免费额度限制。若持续 429，
 换 VPNGate（住宅 IP）比继续换 WARP 身份有效。
@@ -103,11 +108,14 @@ v1.1.3 的 `ResolveAddrWithContext` 只处理 `ipv4` / `ipv6`，默认 `auto` �
 | `2026.11.27.8` | 双栈 + 隧道内 DoH + 启动 chat 200 探测 + 429 grace |
 | `2026.11.27.9` | warp 默认 `prefer_ipv6` |
 | `2026.11.27.10` | wireproxy `[Resolve]`、更低内存默认、`/status.mem` |
+| `2026.11.27.11` | 去掉 undici（`fetch` → `http`/`https`）、限制空闲 socket、`/status.mem.proc`（smaps_rollup / CodeSpace）；fi15 Node RSS 108→91 MiB |
+| `2026.11.27.12` | 启动探测 12/8 次、探测超时 60s、`/status.egress.ip6` |
 
 ## 运维建议
 
 - 公网节点用 `NODE_TOKEN` 覆盖默认值；默认值在公开仓库里。
 - 更新走 `POST /_zen/node/v1/update`，会自动生成 `index.js.bak`；失败可 `/rollback`。
 - 持续 429 且 rotate 无效时，换 VPNGate 模板，不要无限重注册 WARP。
-- `/status` 现在包含 `mem`（Node RSS/heap + gateway/egress 子进程 RSS），
-  可直接观察内存占用。
+- `/status` 现在包含 `mem`（Node RSS/heap + `proc` 的 smaps_rollup/CodeSpace +
+  gateway/egress 子进程 RSS），`/status.egress.ip6` 是隧道 IPv6 回显，
+  可直接观察内存和出口协议。
