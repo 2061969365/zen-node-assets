@@ -66,17 +66,16 @@ vpngate additionally needs `python3` and `curl` on the host. warp and warp-wirep
 
 ## Memory
 
-Measured on GitHub Actions `ubuntu-latest` (Node 20, amd64) from `/proc/<pid>/smaps_rollup` in a one-off run; the measurement harness is not kept in the repo. Values are PSS in MiB after 60 s idle following four `/v1/chat/completions` requests. "Tunnel" is sing-box or wireproxy.
+Controlled run on one GitHub Actions runner, same job, same WARP IPv4 (`104.28.205.117`), Node `v24.22.3`, `/proc/<pid>/smaps_rollup` after four `/v1/chat/completions` requests and 45 s idle ([run 45975113419](https://github.com/2061969365/zen-node-assets/actions/runs/45975113419), `2026.11.27.16`):
 
-| Template | Node PSS | Tunnel PSS | zen-direct PSS | Total PSS | Total RSS | Sum HWM |
-|---|---:|---:|---:|---:|---:|---:|
-| `vpngate` | 99.7 | 65.1 | 16.3 | 181.1 | 188.2 | 191.7 |
-| `warp` | 86.8 | 60.9 | 16.4 | 164.1 | 171.4 | 179.6 |
-| `warp-wireproxy` | 98.9 | 13.0 | 15.2 | 127.1 | 132.8 | 136.9 |
+| Template | Node PSS | Tunnel PSS | zen-direct PSS | Total PSS | Total RSS | egress IPv6 | chat |
+|---|---:|---:|---:|---:|---:|---|---|
+| `warp` | 95.2 | 66.1 | 15.9 | 177.1 | 182.5 | yes | 429,429,429,429 |
+| `warp-wireproxy` | 91.7 | **13.0** | 16.0 | **120.8** | 124.6 | yes | 200,200,200,200 |
 
-`warp-wireproxy` replaces the ~61 MB sing-box process with a ~13 MB wireproxy process, saving roughly 37 MiB PSS versus `warp` and 54 MiB versus `vpngate`. Node RSS is dominated by V8; `SINGBOX_GOMEMLIMIT` / `WIREPROXY_GOMEMLIMIT` cap the Go side.
+`warp-wireproxy` replaces the ~66 MiB sing-box process with a ~13 MiB wireproxy process: **56 MiB less PSS (-32%)** with the same Node and gateway. PSS is the fair number; Node RSS includes ~50 MiB of file-backed `node`/lib pages the kernel can reclaim, and `CodeSpace` is only ~1 MiB, so JIT is not the cost.
 
-The memory table was measured with the older `32MiB` / `GOGC 50` wireproxy defaults. Current defaults are `24MiB` / `GOGC 40`. `/status.mem` reports Node RSS/heap and child RSS, so you can check the live numbers. The remaining large consumer is the Node process itself; if the panel allows environment variables, `NODE_OPTIONS=--max-old-space-size=96 --max-semi-space-size=2` trims V8 headroom (it cannot be applied reliably from inside `index.js`).
+An older run (Node 20, before the undici removal) measured `vpngate` 181.1, `warp` 164.1 and `warp-wireproxy` 127.1 MiB PSS; `vpngate` was not re-measured here. Current wireproxy defaults are `24MiB` / `GOGC 40`. `/status.mem` reports Node RSS/heap, `proc` (smaps_rollup, CodeSpace) and child RSS. If the panel allows environment variables, `NODE_OPTIONS=--max-old-space-size=96 --max-semi-space-size=2` trims V8 headroom (it cannot be applied reliably from inside `index.js`).
 
 ### Live numbers (Bot-Hosting, Node v24.22.2, `warp-wireproxy`)
 
@@ -95,7 +94,13 @@ Because `PORT` is handed to `node index.js` by the panel, V8 flags cannot be inj
 
 ## Boot 429s
 
-`opencode.ai` does have AAAA records, but WARP still reaches it over the shared Cloudflare IPv4 NAT pool, where the upstream free-usage counter is usually exhausted (`FreeUsageLimitError`). Every `rotate` re-registers wgcf, which yields a new WARP identity, a new `/128`, and usually a new NAT IPv4, so a 429 at boot is a lottery over the pool. `.12` raises `BOOT_PROBE_TRIES` to 12 for `warp-wireproxy` (8 for `warp`/`vpngate`) and keeps rotating until a probe returns 200; on the test host roughly one in four sampled IPs was usable, so four tries failed while a dozen almost always finds one. `/status.egress.ip6` shows whether the tunnel actually carries IPv6 (probed against AAAA-only echo hosts).
+The upstream free-usage counter is per **source IP**. WARP IPv4 egress is Cloudflare's shared NAT (often already exhausted, `FreeUsageLimitError`), while WARP IPv6 is a per-account `/128` that usually starts clean. `opencode.ai` has AAAA records, so a tunnel that really carries IPv6 has an independent, usually-fresh path.
+
+Every `rotate` re-registers wgcf, which yields a new WARP identity, a new `/128`, and usually a new NAT IPv4, so a boot 429 is a lottery over the pool. `BOOT_PROBE_TRIES` is 12 for `warp-wireproxy` and 8 for `warp`/`vpngate`; each 429 rotates and re-probes until one returns 200.
+
+`warp-wireproxy` was IPv4-only until `2026.11.27.16`: wireproxy parses `Address` with `strings.Split(value, ",")`, but go-ini shadows repeated keys and `Key.String()` returned only one of the two `Address =` lines, so the netstack never got the v6 address. Emitting `Address = v4, v6` on one line fixes it. `/status.egress.ip6` (AAAA-only echo probe) reports the result.
+
+Isolation evidence ([run 45974682609](https://github.com/2061969365/zen-node-assets/actions/runs/45974682609), one runner, same WARP IPv4 `104.28.209.115`): `warp` with IPv6 4/8 chats 200, `warp` forced IPv4 8/8, `warp-wireproxy` (fixed) 8/8 with a real IPv6 egress. On an exhausted IPv4 the same split was 12/12 (IPv6) vs 0/12 (forced IPv4), so IPv6 is a second independent quota path rather than a universal fix.
 
 
 Runs: `vpngate` and `warp-wireproxy` from [memory 45942525430](https://github.com/2061969365/zen-node-assets/actions/runs/45942525430); `warp` from [memory 45940799384](https://github.com/2061969365/zen-node-assets/actions/runs/45940799384) (WARP tunnel stayed up; on some runners UDP 2408 is blocked and the node falls back to direct).

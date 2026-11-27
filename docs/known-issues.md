@@ -98,6 +98,39 @@ v1.1.3 的 `ResolveAddrWithContext` 只处理 `ipv4` / `ipv6`，默认 `auto` �
 按 `LOG_CHILD_MAX_MB`（默认 10MB）截断保留最后 128KB，并按 `LOG_MAX_AGE_DAYS`
 （默认 7 天）清理。
 
+## 8. wireproxy 没有 IPv6 出口（go-ini 覆盖同名键）
+
+**现象**
+
+`warp-wireproxy` 的 `egress.ip6` 恒为空；AAAI-only 的 `ipv6.icanhazip.com` 探测失败。
+同机 `warp`（sing-box）能正常拿到 `2a09:bac1:...` 的 IPv6 出口。
+
+**根因**
+
+wireproxy 用 go-ini 解析配置，`AllowShadows: true` 下重复键的 `Key.String()` 只返回其中一个值；
+而 `parseCIDRNetIP` 对 `Address` 是 `strings.Split(value, ",")`。我们原来把 v4/v6 写成两行
+`Address =`，于是只有一个地址进入 netstack，v6 路由存在但本机没有 v6 源地址，IPv6 一律失败。
+
+**修复**
+
+把两个地址合并成一行：`Address = 172.16.0.2/32, 2606:4700:.../128`。
+`AllowedIPs = 0.0.0.0/0, ::/0` 本来就是逗号分隔，不受影响。
+
+**验证**（[ipv6-isolate 45974682609](https://github.com/2061969365/zen-node-assets/actions/runs/45974682609)）
+
+同一 runner、同一 WARP 出口 IPv4 `104.28.209.115`：
+
+| 模板 | IPv6 出口 | chat |
+|---|---|---|
+| `warp` | 有 | 4/8 个 200 |
+| `warp`（`WARP_FORCE_IPV4=1`） | 无 | 8/8 个 200 |
+| `warp-wireproxy`（.16） | **有** | **8/8 个 200** |
+
+**429 的真实机制**：按源 IP 计的免费额度。IPv4 走 Cloudflare 共享 NAT，可能刚好被用爆；
+IPv6 是每个 WARP 账号独立的 `/128`，通常是干净额度。两者都可能成功，但 IPv6 提供了一条
+独立通道。早先那次 12/12 对 0/12 的结论（"IPv6 是唯一变量"）只在那个已被用爆的 IPv4 上成立；
+换一个干净的 IPv4，强制 v4 也能 8/8 成功。
+
 ## 版本对照
 
 | 版本 | 内容 |
@@ -110,6 +143,10 @@ v1.1.3 的 `ResolveAddrWithContext` 只处理 `ipv4` / `ipv6`，默认 `auto` �
 | `2026.11.27.10` | wireproxy `[Resolve]`、更低内存默认、`/status.mem` |
 | `2026.11.27.11` | 去掉 undici（`fetch` → `http`/`https`）、限制空闲 socket、`/status.mem.proc`（smaps_rollup / CodeSpace）；fi15 Node RSS 108→91 MiB |
 | `2026.11.27.12` | 启动探测 12/8 次、探测超时 60s、`/status.egress.ip6` |
+| `2026.11.27.13` | IPv6 探测备用域名换成 `api6.ipify.org` |
+| `2026.11.27.14` | warp/vpngate 也上报 `egress.ip6`；新增 `mem-compare` / `ipv6-isolate` CI |
+| `2026.11.27.15` | `WARP_FORCE_IPV4=1`（去掉 v6 Address/`::/0`，DNS `ipv4_only`） |
+| `2026.11.27.16` | **修 wireproxy IPv6**：`Address` 合并成一行，netstack 拿到 v4+v6 |
 
 ## 运维建议
 
