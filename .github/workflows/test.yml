@@ -258,3 +258,169 @@ jobs:
             /tmp/egress-${{ matrix.template }}.log
             /tmp/egress-health.json
           if-no-files-found: ignore
+
+  update:
+    name: update-${{ matrix.template }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - template: vpngate
+          - template: warp
+          - template: warp-wireproxy
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: self-update
+        env:
+          PORT: "18080"
+          ZEN_PORT: "18081"
+          EGRESS_PORT: "18082"
+          NODE_TOKEN: test
+          EGRESS_MODE: direct
+          ZEN_UPDATE_RESTART_MODE: exec
+          LOG_DIR: .zen-update-${{ matrix.template }}
+        run: |
+          set -euo pipefail
+          tpl="${{ matrix.template }}"
+          node "$tpl/index.js" > "/tmp/update-$tpl.log" 2>&1 &
+          node_pid=$!
+          cleanup() {
+            pkill -f "$tpl/index.js" 2>/dev/null || true
+            wait "$node_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          cat > /tmp/ver.js <<'NODE'
+          const fs = require('fs');
+          const j = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          process.stdout.write(String(j.version || ''));
+          NODE
+          cat > /tmp/mkver.js <<'NODE'
+          const v = process.argv[2].split('.');
+          v[v.length - 1] = String(Number(v[v.length - 1]) + 1);
+          process.stdout.write(v.join('.'));
+          NODE
+          cat > /tmp/patch.js <<'NODE'
+          const fs = require('fs');
+          const [src, dst, from, to] = process.argv.slice(2);
+          let s = fs.readFileSync(src, 'utf8');
+          const a = `const VERSION = ${JSON.stringify(from)}`;
+          const b = `const VERSION = ${JSON.stringify(to)}`;
+          if (!s.includes(a)) { console.error('version marker not found'); process.exit(1); }
+          fs.writeFileSync(dst, s.replace(a, b));
+          NODE
+          cat > /tmp/body.js <<'NODE'
+          const fs = require('fs');
+          const [src, tpl, ver, sha] = process.argv.slice(2);
+          const content = fs.readFileSync(src).toString('base64');
+          fs.writeFileSync('/tmp/update-body.json', JSON.stringify({
+            template: tpl, version: ver, sha256: sha, content, restart: true, restartMode: 'exec',
+          }));
+          NODE
+          cat > /tmp/bad.js <<'NODE'
+          const fs = require('fs');
+          const j = JSON.parse(fs.readFileSync('/tmp/update-body.json', 'utf8'));
+          j.sha256 = '0'.repeat(64);
+          fs.writeFileSync('/tmp/update-bad.json', JSON.stringify(j));
+          NODE
+
+          echo "wait healthz"
+          for i in $(seq 1 60); do
+            curl -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1 && break
+            sleep 1
+          done
+          curl -fsS "http://127.0.0.1:$PORT/healthz"
+
+          echo "wait manifest"
+          for i in $(seq 1 120); do
+            curl -fsS --max-time 3 -H "Authorization: Bearer test" \
+              "http://127.0.0.1:$PORT/_zen/node/v1/manifest" > /tmp/update-manifest.json 2>/dev/null && break
+            sleep 1
+          done
+          cat /tmp/update-manifest.json
+          old_version=$(node /tmp/ver.js /tmp/update-manifest.json)
+          echo "old_version=$old_version"
+          test -n "$old_version"
+
+          new_version=$(node /tmp/mkver.js "$old_version")
+          echo "new_version=$new_version"
+          node /tmp/patch.js "$tpl/index.js" /tmp/update-new.js "$old_version" "$new_version"
+          sha=$(sha256sum /tmp/update-new.js | awk '{print $1}')
+          node /tmp/body.js /tmp/update-new.js "$tpl" "$new_version" "$sha"
+
+          echo "bad sha"
+          node /tmp/bad.js
+          bad_code=$(curl -sS -o /tmp/update-bad-resp.json -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer test" -H "Content-Type: application/json" \
+            --data-binary @/tmp/update-bad.json \
+            "http://127.0.0.1:$PORT/_zen/node/v1/update")
+          echo "bad sha status=$bad_code body=$(cat /tmp/update-bad-resp.json)"
+          [ "$bad_code" = "400" ]
+
+          echo "apply update"
+          code=$(curl -sS -o /tmp/update-resp.json -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer test" -H "Content-Type: application/json" \
+            --data-binary @/tmp/update-body.json \
+            "http://127.0.0.1:$PORT/_zen/node/v1/update")
+          echo "update status=$code body=$(cat /tmp/update-resp.json)"
+          [ "$code" = "202" ]
+
+          echo "wait new version"
+          ok=0
+          for i in $(seq 1 120); do
+            if curl -fsS --max-time 3 -H "Authorization: Bearer test" \
+              "http://127.0.0.1:$PORT/_zen/node/v1/manifest" > /tmp/update-manifest2.json 2>/dev/null; then
+              v=$(node /tmp/ver.js /tmp/update-manifest2.json)
+              if [ "$v" = "$new_version" ]; then ok=1; break; fi
+            fi
+            sleep 1
+          done
+          cat /tmp/update-manifest2.json 2>/dev/null || true
+          [ "$ok" = "1" ]
+
+          echo "backup check"
+          grep -q "const VERSION = '$old_version'" "$tpl/index.js.bak"
+          grep -q "const VERSION = '$new_version'" "$tpl/index.js"
+
+          echo "rollback"
+          code=$(curl -sS -o /tmp/rollback-resp.json -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer test" -H "Content-Type: application/json" \
+            -d '{"restart":true}' \
+            "http://127.0.0.1:$PORT/_zen/node/v1/rollback")
+          echo "rollback status=$code body=$(cat /tmp/rollback-resp.json)"
+          [ "$code" = "202" ]
+
+          ok=0
+          for i in $(seq 1 120); do
+            if curl -fsS --max-time 3 -H "Authorization: Bearer test" \
+              "http://127.0.0.1:$PORT/_zen/node/v1/manifest" > /tmp/update-manifest3.json 2>/dev/null; then
+              v=$(node /tmp/ver.js /tmp/update-manifest3.json)
+              if [ "$v" = "$old_version" ]; then ok=1; break; fi
+            fi
+            sleep 1
+          done
+          cat /tmp/update-manifest3.json 2>/dev/null || true
+          [ "$ok" = "1" ]
+          echo "self-update ok: $old_version -> $new_version -> $old_version"
+
+      - name: upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: update-${{ matrix.template }}-logs
+          include-hidden-files: true
+          path: |
+            .zen-update-${{ matrix.template }}/*.log
+            .zen-update-${{ matrix.template }}/*.json
+            /tmp/update-${{ matrix.template }}.log
+            /tmp/update-*.json
+            /tmp/rollback-resp.json
+            ${{ matrix.template }}/index.js.bak
+          if-no-files-found: ignore

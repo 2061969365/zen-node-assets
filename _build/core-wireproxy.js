@@ -27,6 +27,8 @@
  *   POST /_zen/node/v1/restart
  *   POST /_zen/node/v1/rotate
  *   POST /_zen/node/v1/apply
+ *   POST /_zen/node/v1/update      self-update from base64 or https URL
+ *   POST /_zen/node/v1/rollback    restore index.js.bak
  */
 
 const http = require('http');
@@ -41,7 +43,7 @@ const { Readable, Transform } = require('stream');
 const { pipeline } = require('stream/promises');
 
 const TEMPLATE = '__TEMPLATE__';
-const VERSION = '2026.11.27.2';
+const VERSION = '2026.11.27.3';
 const DEFAULT_NODE_ID = '__NODE_ID__';
 const DEFAULT_ALLOW_FALLBACK = __ALLOW_FALLBACK__;
 const DEFAULT_ASSETS_BASE = 'https://github.com/2061969365/zen-node-assets/releases/download/v2026.11.27';
@@ -465,6 +467,8 @@ const state = {
   rotateInFlight: false,
   lastBootstrapAt: 0,
   lastEgressCheck: 0,
+  updating: false,
+  restarting: false,
 };
 
 let bootstrapInFlight = false;
@@ -822,7 +826,8 @@ function manifest() {
     templateType: TEMPLATE,
     version: VERSION,
     publicUrl: PUBLIC_URL,
-    capabilities: ['start', 'stop', 'restart', 'rotate', 'logs'],
+    capabilities: ['start', 'stop', 'restart', 'rotate', 'logs', 'update', 'rollback'],
+    update: { protocol: '1', maxBytes: UPDATE_MAX_BYTES, restartModes: ['exec', 'exit', 'crash'] },
     healthPath: '/health',
     dataPath: '/v1',
   };
@@ -855,6 +860,9 @@ async function handleControl(req, res, u) {
   }
   const p = u.pathname.slice('/_zen/node/v1'.length) || '/';
   try {
+    if (state.updating && req.method === 'POST' && p !== '/update') {
+      return json(res, 409, { error: 'update in progress' });
+    }
     if (req.method === 'GET' && p === '/manifest') return json(res, 200, manifest());
     if (req.method === 'GET' && p === '/status') return json(res, 200, await status());
     if (req.method === 'GET' && p === '/logs') {
@@ -878,6 +886,8 @@ async function handleControl(req, res, u) {
       rotate().catch((e) => log('rotate error:', e.message));
       return json(res, 202, { ok: true });
     }
+    if (req.method === 'POST' && p === '/update') return handleUpdate(req, res);
+    if (req.method === 'POST' && p === '/rollback') return handleRollback(req, res);
     if (req.method === 'POST' && p === '/apply') {
       const body = await readJson(req);
       if (!body || typeof body !== 'object') return json(res, 400, { error: 'bad json' });
@@ -1006,5 +1016,7 @@ server.listen(PORT, '0.0.0.0', () => {
   startWatchdog();
   startAll().catch((e) => log('bootstrap failed:', e.message));
 });
+
+// __UPDATE_BLOCK__
 
 // __TEMPLATE_BLOCK__
