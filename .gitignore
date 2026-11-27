@@ -1,0 +1,9 @@
+.zen*/
+node_modules/
+npm-debug.log*
+zen-direct
+sing-box
+wgcf
+sha256sums.txt
+probe_and_select_vpngate.py
+vpngate_to_singbox.py

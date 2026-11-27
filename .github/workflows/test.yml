@@ -1,0 +1,244 @@
+name: test
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  ASSETS_BASE_URL: https://github.com/2061969365/zen-node-assets/releases/download/v2026.11.27
+
+jobs:
+  smoke:
+    name: smoke-${{ matrix.template }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - template: vpngate
+            assets: "zen-direct sing-box vpngate_to_singbox.py probe_and_select_vpngate.py sha256sums.txt"
+          - template: warp
+            assets: "zen-direct sing-box wgcf sha256sums.txt"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: syntax
+        run: node --check "${{ matrix.template }}/index.js"
+
+      - name: assets
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/assets
+          for f in ${{ matrix.assets }}; do
+            curl -fsSL --retry 3 -o "/tmp/assets/$f" "$ASSETS_BASE_URL/$f"
+          done
+          cd /tmp/assets
+          sha256sum -c --ignore-missing sha256sums.txt
+
+      - name: smoke
+        env:
+          PORT: "18080"
+          ZEN_PORT: "18081"
+          NODE_TOKEN: test
+          EGRESS_MODE: direct
+          LOG_DIR: .zen-${{ matrix.template }}
+        run: |
+          set -euo pipefail
+          node "${{ matrix.template }}/index.js" > /tmp/node-${{ matrix.template }}.log 2>&1 &
+          node_pid=$!
+          cleanup() {
+            kill "$node_pid" 2>/dev/null || true
+            wait "$node_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          echo "wait healthz"
+          for i in $(seq 1 60); do
+            if curl -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          curl -fsS "http://127.0.0.1:$PORT/healthz"
+
+          echo "wait gateway health"
+          code=""
+          for i in $(seq 1 150); do
+            code=$(curl -s -o /tmp/health.json -w '%{http_code}' "http://127.0.0.1:$PORT/health" || true)
+            if [ "$code" = "200" ]; then break; fi
+            sleep 1
+          done
+          cat /tmp/health.json
+          [ "$code" = "200" ]
+          grep -q '"run_id"' /tmp/health.json
+
+          echo "status"
+          curl -fsS -H "Authorization: Bearer test" "http://127.0.0.1:$PORT/_zen/node/v1/status" > /tmp/status.json
+          cat /tmp/status.json
+          grep -q '"state":"running"' /tmp/status.json
+
+          echo "auth required"
+          if curl -fsS "http://127.0.0.1:$PORT/_zen/node/v1/status" >/dev/null 2>&1; then
+            echo "expected 401 without token"
+            exit 1
+          fi
+
+          echo "v1 sse"
+          v1_code=$(curl -sS -o /tmp/sse.txt -w '%{http_code}' --max-time 45 -N \
+            -H "Authorization: Bearer public" \
+            -H "Content-Type: application/json" \
+            -d '{"model":"deepseek-v4.1-flash-free","messages":[{"role":"user","content":"Reply with ok"}],"max_tokens":8,"stream":true}' \
+            "http://127.0.0.1:$PORT/v1/chat/completions" || true)
+          echo "v1 status=$v1_code"
+          head -c 400 /tmp/sse.txt || true
+          case "$v1_code" in
+            200|429) ;;
+            *) echo "unexpected v1 status $v1_code"; exit 1 ;;
+          esac
+
+          echo "restart"
+          curl -fsS -X POST -H "Authorization: Bearer test" "http://127.0.0.1:$PORT/_zen/node/v1/restart" >/dev/null
+          sleep 2
+          code=""
+          for i in $(seq 1 150); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/health" || true)
+            [ "$code" = "200" ] && break
+            sleep 1
+          done
+          [ "$code" = "200" ]
+
+          echo "stop/start"
+          curl -fsS -X POST -H "Authorization: Bearer test" "http://127.0.0.1:$PORT/_zen/node/v1/stop" >/dev/null
+          sleep 2
+          stop_code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/health" || true)
+          echo "after stop health=$stop_code"
+          [ "$stop_code" = "503" ] || [ "$stop_code" = "000" ]
+          curl -fsS -X POST -H "Authorization: Bearer test" "http://127.0.0.1:$PORT/_zen/node/v1/start" >/dev/null
+          code=""
+          for i in $(seq 1 150); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/health" || true)
+            [ "$code" = "200" ] && break
+            sleep 1
+          done
+          [ "$code" = "200" ]
+
+          echo "rotate"
+          curl -fsS -X POST -H "Authorization: Bearer test" "http://127.0.0.1:$PORT/_zen/node/v1/rotate" >/dev/null
+          sleep 2
+          code=""
+          for i in $(seq 1 150); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/health" || true)
+            [ "$code" = "200" ] && break
+            sleep 1
+          done
+          [ "$code" = "200" ]
+
+          echo "watchdog"
+          curl -fsS -H "Authorization: Bearer test" "http://127.0.0.1:$PORT/_zen/node/v1/status" > /tmp/status2.json
+          gw_pid=$(node -e 'const fs=require("fs");const j=JSON.parse(fs.readFileSync("/tmp/status2.json","utf8"));process.stdout.write(String(j.pid||0))')
+          echo "gateway pid=$gw_pid"
+          if [ "$gw_pid" != "0" ]; then kill -9 "$gw_pid" 2>/dev/null || true; fi
+          sleep 2
+          code=""
+          for i in $(seq 1 180); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/health" || true)
+            [ "$code" = "200" ] && break
+            sleep 1
+          done
+          echo "after watchdog health=$code"
+          [ "$code" = "200" ]
+
+      - name: upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-${{ matrix.template }}-logs
+          path: |
+            .zen-${{ matrix.template }}/*.log
+            .zen-${{ matrix.template }}/*.json
+            .zen-${{ matrix.template }}/*.txt
+            /tmp/node-${{ matrix.template }}.log
+            /tmp/health.json
+            /tmp/status.json
+            /tmp/status2.json
+            /tmp/sse.txt
+          if-no-files-found: ignore
+
+  egress:
+    name: egress-${{ matrix.template }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - template: vpngate
+          - template: warp
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: egress
+        env:
+          PORT: "18080"
+          ZEN_PORT: "18081"
+          NODE_TOKEN: test
+          EGRESS_MODE: auto
+          ALLOW_DIRECT_FALLBACK: "1"
+          LOG_DIR: .zen-egress-${{ matrix.template }}
+          VPNGATE_MAX_CANDIDATES: "10"
+          VPNGATE_KEEP_NODES: "1"
+          VPNGATE_CONCURRENCY: "5"
+        run: |
+          set -euo pipefail
+          node "${{ matrix.template }}/index.js" > /tmp/egress-${{ matrix.template }}.log 2>&1 &
+          node_pid=$!
+          cleanup() {
+            kill "$node_pid" 2>/dev/null || true
+            wait "$node_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          code=""
+          for i in $(seq 1 900); do
+            code=$(curl -s -o /tmp/egress-health.json -w '%{http_code}' "http://127.0.0.1:$PORT/health" || true)
+            [ "$code" = "200" ] && break
+            sleep 1
+          done
+          cat /tmp/egress-health.json 2>/dev/null || true
+          [ "$code" = "200" ]
+
+          egress_ip=$(node -e 'const fs=require("fs");const j=JSON.parse(fs.readFileSync("/tmp/egress-health.json","utf8"));process.stdout.write(String(j.egress_ip||""))')
+          runner_ip=$(curl -fsS --max-time 15 https://api.ipify.org || true)
+          echo "egress_ip=$egress_ip runner_ip=$runner_ip"
+          if [ -z "$egress_ip" ]; then
+            echo "::warning::no egress_ip reported"
+          elif [ "$egress_ip" = "$runner_ip" ]; then
+            echo "::warning::${{ matrix.template }} fell back to runner egress"
+          else
+            echo "::notice::${{ matrix.template }} egress is different from runner"
+          fi
+
+      - name: upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: egress-${{ matrix.template }}-logs
+          path: |
+            .zen-egress-${{ matrix.template }}/*.log
+            .zen-egress-${{ matrix.template }}/*.json
+            .zen-egress-${{ matrix.template }}/*.txt
+            /tmp/egress-${{ matrix.template }}.log
+            /tmp/egress-health.json
+          if-no-files-found: ignore
